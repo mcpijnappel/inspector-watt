@@ -1,9 +1,13 @@
 name: inspector-watt
 
+# Each service has a published image (./dc pull) and its source (./dc up -d --build builds it here instead).
+# IMAGE_TAG picks a version (e.g. 1.2); the simulator stack uses its own tag so its builds stay apart.
+
 x-database-url: &database-url postgresql://tracker:${DB_PASSWORD:-tracker}@db:5432/tracker
 
 services:
   db:
+    image: ghcr.io/mcpijnappel/inspector-watt-db:${IMAGE_TAG:-latest}
     build: ./db  # timescale/timescaledb:2.30.2-pg18 + db/init/*.sql
     restart: unless-stopped
     environment:
@@ -24,6 +28,7 @@ services:
       retries: 20
 
   capture:
+    image: ghcr.io/mcpijnappel/inspector-watt-capture:${IMAGE_TAG:-latest}
     build:
       context: ./capture
       target: runtime
@@ -59,6 +64,7 @@ services:
       - "127.0.0.1:${CAPTURE_PORT:-8100}:8100"  # debugging; the api service is the normal entry point
 
   api:
+    image: ghcr.io/mcpijnappel/inspector-watt-api:${IMAGE_TAG:-latest}
     build:
       context: ./api
       target: runtime
@@ -82,6 +88,7 @@ services:
   # Agents (MCP): analyse sessions, read live data, edit phase rules; no hardware control. On this machine at
   # http://localhost:8300/mcp; on the LAN through the web port (/mcp) with the token from Settings → Agents.
   mcp:
+    image: ghcr.io/mcpijnappel/inspector-watt-mcp:${IMAGE_TAG:-latest}
     build:
       context: ./mcp-server
       target: runtime
@@ -95,6 +102,7 @@ services:
       - "127.0.0.1:${MCP_PORT:-8300}:8300"
 
   web:
+    image: ghcr.io/mcpijnappel/inspector-watt-web:${IMAGE_TAG:-latest}
     build:
       context: ./frontend
       additional_contexts:

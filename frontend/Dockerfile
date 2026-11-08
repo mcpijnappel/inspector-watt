@@ -1,4 +1,5 @@
-FROM docker.io/library/node:22-alpine AS build
+# Static files only, so this stage always runs on the build machine's own platform (fast arm64 builds).
+FROM --platform=$BUILDPLATFORM docker.io/library/node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund

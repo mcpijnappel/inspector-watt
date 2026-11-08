@@ -117,10 +117,12 @@ Screenshots: the built-in simulator.
    - **Another USB-UART adapter:** look up its ids with
      `udevadm info /dev/ttyUSB0 | grep -E 'ID_(VENDOR|MODEL)_ID'` and change the `dut-uart` line.
 
-4. **Start** everything:
+4. **Start** everything, with the published images (amd64 and arm64):
    ```
-   ./dc up -d --build
+   ./dc pull
+   ./dc up -d
    ```
+   Or build them from this checkout instead: `./dc up -d --build` (a few minutes on a mini PC).
    Open **http://localhost:8080**. Without the hardware, try the [simulator](#development) first.
 
 5. **From a laptop or phone** (optional): set `WEB_BIND=0.0.0.0` in `.env` and run `./dc up -d` again, then
@@ -329,9 +331,11 @@ including the power-cycle; reading the whole 4 MB flash (a backup) takes ~20 s.
 
 ```
 git pull
-./dc up -d --build
+./dc pull
+./dc up -d
 ```
-Database changes are applied automatically when the api starts. Rebuilding `capture` during a recording
+(Built from source: `git pull` and `./dc up -d --build`.) To stay on a version, set `IMAGE_TAG=1.2` in
+`.env`. Database changes are applied automatically when the api starts. Rebuilding `capture` during a recording
 leaves a gap of about 4 seconds in it; to update one service only: `./dc up -d --build --no-deps web`.
 
 ### Backup
@@ -387,7 +391,8 @@ Frontend with hot reload against the running stack (http://localhost:5173):
 docker run --rm -it --network host -v "$PWD/frontend":/app:z -w /app node:22-alpine npm run dev
 ```
 
-Tests:
+Tests (GitHub Actions runs the same on every push and pull request, and publishes the images from `main`
+and version tags):
 ```
 docker build --target test -t pst-capture-test capture && docker run --rm pst-capture-test
 docker build --target test -t pst-api-test api && docker run --rm pst-api-test
@@ -428,6 +433,7 @@ Defaults are in `compose.yaml`; see `.env.example`.
 | `API_PORT`, `CAPTURE_PORT`, `MCP_PORT`, `DB_PORT` | 8000, 8100, 8300, 5432 | on 127.0.0.1 only |
 | `MCP_TOKEN` | – | first start only; then Settings → Agents |
 | `FLASH_TOKEN` | random | upload token, first start only; then `/api/flash/settings` |
+| `IMAGE_TAG` | latest | published image version for `./dc pull` (`sim` in `sim.env`) |
 | `DB_PASSWORD`, `LOG_LEVEL`, `UID`, `GID` | tracker, INFO, 1000, 1000 | |
 
 ### api (port 8000, on this machine; `/api/...` through the web port)
