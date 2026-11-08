@@ -4,7 +4,9 @@ __pycache__/
 *.egg-info/
 build/
 .env
-data/
+/data/*
+!/data/.gitkeep
 node_modules/
 dist/
-data-sim/
+/data-sim/*
+!/data-sim/.gitkeep

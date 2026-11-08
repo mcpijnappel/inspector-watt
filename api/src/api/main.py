@@ -93,6 +93,12 @@ async def capture_get(path: str, **params) -> dict | None:
         return None
 
 
+@app.get("/api/ready")
+async def ready():
+    """Answers once the api is up, i.e. after the migrations ran (compose's healthcheck: capture waits for it)."""
+    return {"ok": True}
+
+
 # sessions -------------------------------------------------------------------------------------------------
 @app.get("/api/health")
 async def health():
