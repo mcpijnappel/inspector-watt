@@ -335,7 +335,7 @@ git pull
 ./dc up -d
 ```
 (Built from source: `git pull` and `./dc up -d --build`.) To stay on a version, set `IMAGE_TAG=1.2` in
-`.env`. Database changes are applied automatically when the api starts. Rebuilding `capture` during a recording
+`.env`. The api creates the database schema on the first start and applies changes when it starts. Rebuilding `capture` during a recording
 leaves a gap of about 4 seconds in it; to update one service only: `./dc up -d --build --no-deps web`.
 
 ### Backup
@@ -353,15 +353,16 @@ rsync -a data/ /path/to/backup/data/                                       # ful
 
 1. On the new machine: [Install](#install) steps 1–3. Copy `.env` (it holds settings and the first MCP
    token) and the `data/` folder over.
-2. Start only the database and restore into it:
+2. Start only the database (it starts empty) and restore into it:
    ```
-   ./dc up -d --build db
+   ./dc up -d db
+   ./dc exec -T db psql -U tracker -d tracker -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
    ./dc exec -T db psql -U tracker -d tracker -c "SELECT timescaledb_pre_restore();"
    ./dc exec -T db pg_restore -U tracker -d tracker --clean --if-exists --no-owner < backup.dump
    ./dc exec -T db psql -U tracker -d tracker -c "SELECT timescaledb_post_restore();"
    ```
-3. Start the rest: `./dc up -d --build`. Check the device paths (`ls -l /dev/ppk2 /dev/dut-uart`) and
-   Settings → System health.
+3. Start the rest: `./dc up -d` (or `./dc up -d --build` from source). Check the device paths
+   (`ls -l /dev/ppk2 /dev/dut-uart`) and Settings → System health.
 
 ### Troubleshooting
 

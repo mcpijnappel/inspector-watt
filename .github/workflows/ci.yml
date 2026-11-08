@@ -1,6 +1,6 @@
 # Tests on every push and pull request to dev and main. Images for amd64 and arm64 on pushes to main (tag
 # "latest") and on version tags v1.2.3 (tags "1.2.3", "1.2"), only in the public repository, to
-# ghcr.io/mcpijnappel/inspector-watt-{db,capture,api,mcp,web}.
+# ghcr.io/mcpijnappel/inspector-watt-{capture,api,mcp,web}. The database is the stock TimescaleDB image.
 name: CI
 
 on:
@@ -62,7 +62,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: db, context: db, target: "" }
           - { name: capture, context: capture, target: runtime }
           - { name: api, context: api, target: runtime }
           - { name: mcp, context: mcp-server, target: runtime }

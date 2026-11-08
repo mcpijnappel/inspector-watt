@@ -1,4 +1,5 @@
--- Inspector Watt schema. Runs once, when the database volume is first created.
+-- Inspector Watt base schema: the first migration on an empty database. Databases created before it became a
+-- migration (it was the image's init script) already have these tables; migrate.py marks it done there.
 --
 -- Timeline: every session has its own sample index (0 = session start, 1 step = 10 us on the PPK2 clock).
 -- ts columns are started_at + index * 10 us, so all tables line up exactly with the raw Parquet files.
