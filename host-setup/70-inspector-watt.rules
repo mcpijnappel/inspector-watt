@@ -1,0 +1,20 @@
+# Inspector Watt: USB device access + stable names.
+# Install: sudo cp 70-inspector-watt.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+#
+# TAG+="uaccess" gives the logged-in desktop user access (ACL), so rootless podman containers can open the ports.
+# Must sort before 73-seat-late.rules (where uaccess is applied) and after 60-serial.rules (which sets ID_*).
+
+# Nordic Power Profiler Kit II: interface 01 = data/command port, 03 = second CDC port (unused)
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="1915", ENV{ID_MODEL_ID}=="c00a", ENV{ID_USB_INTERFACE_NUM}=="01", SYMLINK+="ppk2", TAG+="uaccess"
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="1915", ENV{ID_MODEL_ID}=="c00a", ENV{ID_USB_INTERFACE_NUM}=="03", SYMLINK+="ppk2-aux", TAG+="uaccess"
+
+# QinHeng CH343 USB-UART adapter connected to the sensor (DUT) debug UART
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="1a86", ENV{ID_MODEL_ID}=="55d3", SYMLINK+="dut-uart", TAG+="uaccess"
+
+# The DUT's own USB (ESP32-C3/C6 USB-Serial/JTAG), connected through an adapter that blocks the 5 V, so the PPK2
+# still powers it. Used for its USB console (debug menu) and flashing. ModemManager must leave it alone: its probing
+# opens the port, and the firmware counts an open port as "USB connected" (no deep sleep, debug menu waits).
+# Autosuspend right away while the port is closed: with no USB traffic at all the firmware sees "not plugged".
+# (Arduino's HWCDC counts a merely enumerated port as connected at boot, which costs ~0.6 s awake per wake.)
+SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="1001", ENV{ID_MM_DEVICE_IGNORE}="1", ATTR{power/autosuspend_delay_ms}="0", ATTR{power/control}="auto"
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="303a", ENV{ID_MODEL_ID}=="1001", SYMLINK+="dut-usb", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"

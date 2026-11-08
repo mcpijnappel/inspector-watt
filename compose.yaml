@@ -1,0 +1,112 @@
+name: inspector-watt
+
+x-database-url: &database-url postgresql://tracker:${DB_PASSWORD:-tracker}@db:5432/tracker
+
+services:
+  db:
+    build: ./db  # timescale/timescaledb:2.30.2-pg18 + db/init/*.sql
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tracker
+      POSTGRES_USER: tracker
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-tracker}
+      TS_TUNE_MEMORY: 1GB  # don't let timescaledb-tune claim a quarter of the machine
+      TS_TUNE_NUM_CPUS: "2"
+      TIMESCALEDB_TELEMETRY: "off"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"  # for psql / DuckDB / Grafana from this machine
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracker -d tracker"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  capture:
+    build:
+      context: ./capture
+      target: runtime
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"  # files in ./data belong to you; device ACLs are granted to this uid
+    environment:
+      PPK2_PORT: ${PPK2_PORT:-/host-dev/ppk2}
+      UART_PORT: ${UART_PORT:-/host-dev/dut-uart}
+      USB_PORT: ${USB_PORT:-/host-dev/dut-usb}  # the DUT's own USB (console + flashing); opened only on demand
+      UART_BAUD: ${UART_BAUD:-115200}
+      RING_SECONDS: ${RING_SECONDS:-300}
+      MAX_VOLTAGE_MV: ${MAX_VOLTAGE_MV:-4200}  # XIAO ESP32-C6 battery input: 1-cell LiPo, max 4.2 V
+      IDLE_POWER_OFF_S: ${IDLE_POWER_OFF_S:-600}  # DUT off after this long with no browser open and nothing recording; 0 = never
+      DATABASE_URL: *database-url
+      DATA_DIR: /data
+      MIN_FREE_GB: ${MIN_FREE_GB:-10}
+      RAW_MANTISSA_BITS: ${RAW_MANTISSA_BITS:-12}  # raw precision; 23 = lossless (~40 % bigger)
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # The whole host /dev is mounted (not just the device nodes), so the udev symlinks /dev/ppk2 and
+    # /dev/dut-uart keep working after a replug renumbers ttyACM*. The cgroup rule allows only
+    # USB CDC ACM serial devices (major 166).
+    volumes:
+      - /dev:/host-dev:ro
+      - ${DATA_DIR:-./data}:/data:z
+    device_cgroup_rules:
+      - "c 166:* rmw"
+    security_opt:
+      - label=disable  # SELinux: let the container open the host's tty devices
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${CAPTURE_PORT:-8100}:8100"  # debugging; the api service is the normal entry point
+
+  api:
+    build:
+      context: ./api
+      target: runtime
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      DATABASE_URL: *database-url
+      CAPTURE_URL: http://capture:8100
+      DATA_DIR: /data
+      MCP_URL: http://mcp:8300
+      MCP_TOKEN: ${MCP_TOKEN:-}  # only the first time: LAN access for agents is then managed in Settings → Agents
+      FLASH_TOKEN: ${FLASH_TOKEN:-}  # only the first time: the PlatformIO upload token (random if empty)
+    volumes:
+      - ${DATA_DIR:-./data}:/data:z
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+
+  # Agents (MCP): analyse sessions, read live data, edit phase rules; no hardware control. On this machine at
+  # http://localhost:8300/mcp; on the LAN through the web port (/mcp) with the token from Settings → Agents.
+  mcp:
+    build:
+      context: ./mcp-server
+      target: runtime
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8300}:8300"
+
+  web:
+    build:
+      context: ./frontend
+      additional_contexts:
+        platformio: ./platformio  # the PlatformIO upload script, offered as a download (Settings → Firmware upload)
+    restart: unless-stopped
+    depends_on:
+      - api
+      - capture
+      - mcp
+    # No login: anyone who can reach this port can control the PPK2. WEB_BIND=0.0.0.0 opens it to the network.
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:80"
+
+volumes:
+  pgdata:

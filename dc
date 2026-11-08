@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# docker compose, always run from the project's real path. On Bazzite/Fedora Atomic /home is a link to
+# /var/home; compose treats the two spellings as different configs and would recreate (restart) containers.
+#   ./dc up -d --build               real devices
+#   ./dc up -d --build --no-deps capture   redeploy one service without touching the database
+#   ./dc -p pst-sim --env-file sim.env up -d --build   simulator stack
+set -euo pipefail
+cd "$(dirname "$(realpath "$0")")"
+exec docker compose "$@"

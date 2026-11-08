@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>.i{stroke:#1f2328}.a{stroke:#bc4c00}@media (prefers-color-scheme:dark){.i{stroke:#e6edf3}.a{stroke:#f0a33a}}</style>
+  <circle class="i" cx="27" cy="27" r="18" fill="none" stroke-width="5"/>
+  <line class="i" x1="40" y1="40" x2="55" y2="55" stroke-width="7" stroke-linecap="round"/>
+  <path class="a" d="M13 28h5l3-9 4 16 3-12 3 5h7" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
