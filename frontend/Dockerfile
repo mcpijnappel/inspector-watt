@@ -9,4 +9,4 @@ RUN npm run check && npm run build
 FROM docker.io/library/nginx:1.28-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
-COPY --from=platformio tracker_upload.py /usr/share/nginx/html/downloads/tracker_upload.py
+COPY --from=tools pst_flash.py /usr/share/nginx/html/downloads/pst_flash.py

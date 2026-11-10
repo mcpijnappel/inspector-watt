@@ -1,12 +1,25 @@
 <script lang="ts">
-  // Firmware upload: the DUT's USB port, how to set PlatformIO up to flash through the tracker, the upload token,
-  // and the last uploads.
+  // Firmware upload: the DUT's USB port, the upload token, how to set each build system up to flash through the
+  // tracker (PlatformIO, PlatformIO over Arduino OTA, ESP-IDF, other), and the last uploads.
   import { api, type FlashJob } from '../../lib/api';
   import { copyText } from '../../lib/copy';
   import { fmtClock } from '../../lib/format';
   import { live } from '../../lib/live.svelte';
 
+  type Way = 'pio' | 'ota' | 'idf' | 'other';
+  const WAYS: { id: Way; label: string }[] = [
+    { id: 'pio', label: 'PlatformIO' }, { id: 'ota', label: 'PlatformIO OTA' },
+    { id: 'idf', label: 'ESP-IDF' }, { id: 'other', label: 'Other' },
+  ];
+  const WAY_KEY = 'pst.firmware.way';
+  const VIA: Record<string, string> = {
+    platformio: 'PlatformIO', 'arduino-ota': 'OTA', 'esp-idf': 'ESP-IDF', 'merged image': 'merged image',
+    'app image': 'app image', files: 'files',
+  };
+
   let token = $state<string | null>(null);
+  let otaPort = $state<number | null>(null);
+  let way = $state<Way>(savedWay());
   let jobs = $state<FlashJob[]>([]);
   let error = $state('');
   let busy = $state(false);
@@ -21,20 +34,54 @@
   const ini = $derived(`[env:xiao_c6_tracker]
 extends = env:seeed_xiao_esp32c6
 upload_protocol = custom
-extra_scripts = post:tracker_upload.py
+extra_scripts = post:pst_flash.py
 custom_tracker_url = ${url}
 ; custom_tracker_on_recording = ask   ; ask | keep | stop | after | cancel
-; custom_tracker_when_asleep = wait    ; wait | always | cycle (default: the setting here)`);
+; custom_tracker_when_asleep = wait    ; wait | always | cycle (default: the setting here)
+; custom_tracker_full_flash = yes      ; write every image, also those already on the board`);
+  const otaIni = $derived(`[env:xiao_c6_ota]
+extends = env:seeed_xiao_esp32c6
+upload_protocol = espota
+upload_port = ${location.hostname}
+upload_flags =
+  --auth=\${sysenv.PST_FLASH_TOKEN}${otaPort && otaPort !== 3232 ? `\n  --port=${otaPort}` : ''}`);
+  const idfCmd = $derived(`idf.py build
+python pst_flash.py --url ${url} build/`);
+  const otherCmd = $derived(`export PST_URL=${url}
+python pst_flash.py build/esp32.esp32.XIAO_ESP32C6/   # arduino-cli compile --export-binaries
+python pst_flash.py firmware.merged.bin              # esptool merge-bin, espflash
+python pst_flash.py firmware.bin                     # an app image alone
+python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
+  // OTA can't go through a reverse proxy: it needs the tracker's own address on the network
+  const proxied = $derived(location.protocol === 'https:' || !/^(\d+\.){3}\d+$|\.local$|^localhost$/.test(location.hostname));
   const masked = (t: string) => `${t.slice(0, 4)}${'•'.repeat(16)}${t.slice(-4)}`;
   const shown = $derived(token ? (showToken ? token : masked(token)) : '');
   const upload = 'pio run -e xiao_c6_tracker -t upload';
+  const otaUpload = 'pio run -e xiao_c6_ota -t upload';
+
+  function savedWay(): Way {
+    try {
+      const v = localStorage.getItem(WAY_KEY);
+      return WAYS.some((w) => w.id === v) ? (v as Way) : 'pio';
+    } catch {
+      return 'pio';
+    }
+  }
+  function pickWay(w: Way) {
+    way = w;
+    try {
+      localStorage.setItem(WAY_KEY, w);
+    } catch { /* private window: just not remembered */ }
+  }
 
   async function load() {
     try {
       const m = await api.measurement();
       whenAsleep = m.flash_when_asleep ?? 'wait';
       wakeWait = Math.round(m.flash_wake_wait_s ?? 90);
-      token = (await api.flashSettings()).token;
+      const f = await api.flashSettings();
+      token = f.token;
+      otaPort = f.ota_port;
       jobs = await api.flashJobs();
       error = '';
     } catch (e) {
@@ -98,6 +145,7 @@ custom_tracker_url = ${url}
     if (j.choice === 'stop') parts.push('recording stopped');
     else if (j.session_id) parts.push(`marked in session ${j.session_id}`);
     const skipped = j.images.filter((im) => im.skipped).length;
+    if (j.meta.source === 'arduino-ota' && j.status === 'done') parts.push('app only');
     if (j.status === 'done' && j.full_flash) parts.push('full flash');
     else if (j.status === 'done' && skipped) parts.push(`${skipped} of ${j.images.length} images already on the board`);
     return parts.join(' · ');
@@ -106,7 +154,7 @@ custom_tracker_url = ${url}
 
 <div class="section">
   <h2 class="title">Firmware upload</h2>
-  <p class="intro muted">Flash the DUT from PlatformIO on any machine on the network. The tracker runs esptool on the DUT's own USB port (through an adapter that blocks the 5 V) while the PPK2 keeps powering it. Agents (MCP) can't flash.</p>
+  <p class="intro muted">Flash the DUT from any build system on the network. The tracker writes it over the DUT's own USB port (through an adapter that blocks the 5 V) while the PPK2 keeps powering it. Agents (MCP) can't flash.</p>
   {#if error}<div class="banner bad">{error}</div>{/if}
 
   <section class="panel card">
@@ -137,26 +185,15 @@ custom_tracker_url = ${url}
           onchange={() => saveAsleep('cycle', wakeWait)} />
         <span><span>Power-cycle it right away with the PPK2</span> <span class="faint small">Fastest.</span></span>
       </label>
-      <p class="faint small">Power-cycling needs the voltage set by the tracker (switch the DUT on once). <span class="mono">custom_tracker_when_asleep</span> in platformio.ini overrides this per upload.</p>
+      <p class="faint small">Power-cycling needs the voltage set by the tracker (switch the DUT on once). An upload can override it (<span class="mono">custom_tracker_when_asleep</span>, <span class="mono">--when-asleep</span>).</p>
     </div>
+  </section>
 
-    <div class="block">
-      <div class="label">1 · Put tracker_upload.py in the firmware project</div>
-      <div class="acts"><a class="btn small primary" href="/downloads/tracker_upload.py" download="tracker_upload.py">Download tracker_upload.py</a></div>
-      <p class="faint small">Save it next to platformio.ini. It's also in this tracker's repository: <span class="mono">platformio/tracker_upload.py</span>.</p>
-    </div>
-
-    <div class="block">
-      <div class="label">2 · Add an environment to platformio.ini</div>
-      <div class="cmd"><pre>{ini}</pre><button class="btn small" type="button" onclick={() => copy(ini, 'ini')}>{copied === 'ini' ? 'Copied' : 'Copy'}</button></div>
-      <p class="faint small"><span class="mono">extends</span> names the environment you build now; change it for another board.</p>
-    </div>
-
-    <div class="block">
-      <div class="label">3 · Set the upload token on that machine</div>
+  <section class="panel card">
+    <div class="block first">
+      <div class="label">Upload token</div>
       {#if token}
         <div class="tokenrow">
-          <span class="muted small">Token</span>
           <code class="token">{shown}</code>
           <button class="btn small ghost" type="button" onclick={() => (showToken = !showToken)}>{showToken ? 'Hide' : 'Show'}</button>
           <button class="btn small ghost" type="button" onclick={() => token && copy(token, 'token')}>{copied === 'token' ? 'Copied' : 'Copy'}</button>
@@ -171,18 +208,73 @@ custom_tracker_url = ${url}
         </div>
         <div class="cmd"><code>export PST_FLASH_TOKEN={shown}</code><button class="btn small" type="button" onclick={() => token && copy(`export PST_FLASH_TOKEN=${token}`, 'export')}>{copied === 'export' ? 'Copied' : 'Copy'}</button></div>
         <div class="cmd"><code>$env:PST_FLASH_TOKEN="{shown}"</code><button class="btn small" type="button" onclick={() => token && copy(`$env:PST_FLASH_TOKEN="${token}"`, 'ps')}>{copied === 'ps' ? 'Copied' : 'Copy'}</button></div>
-        <p class="faint small">Linux / macOS above, Windows PowerShell below. Anyone who can open this web UI can see the token, like the MCP token.</p>
+        <p class="faint small">Set it on the machine you upload from (Linux / macOS above, Windows PowerShell below). Every way below uses it; OTA uploads use it as the password. Anyone who can open this web UI can see it, like the MCP token.</p>
       {:else}
         <p class="muted small">No token yet.</p>
       {/if}
     </div>
+  </section>
 
-    <div class="block">
-      <div class="label">4 · Upload</div>
-      <div class="cmd"><code>{upload}</code><button class="btn small" type="button" onclick={() => copy(upload, 'up')}>{copied === 'up' ? 'Copied' : 'Copy'}</button></div>
-      <p class="faint small">While a recording runs, the upload asks what to do with it, in the terminal and here in the web UI.</p>
-      <p class="faint small">Images already on the board (same checksum) aren't written again: usually the bootloader and partition table, or the whole build when it's unchanged. <span class="mono">custom_tracker_full_flash = yes</span> writes everything.</p>
+  <section class="panel card">
+    <div class="block first">
+      <div class="label">Set up your build</div>
+      <div class="seg ways" role="group" aria-label="Build system">
+        {#each WAYS as w (w.id)}
+          <button type="button" aria-pressed={way === w.id} onclick={() => pickWay(w.id)}>{w.label}</button>
+        {/each}
+      </div>
     </div>
+
+    {#if way !== 'ota'}
+      <div class="block">
+        <div class="label">1 · {way === 'pio' ? 'Put pst_flash.py next to platformio.ini' : 'Download pst_flash.py'}</div>
+        <div class="acts"><a class="btn small primary" href="/downloads/pst_flash.py" download="pst_flash.py">Download pst_flash.py</a></div>
+        <p class="faint small">One file, Python 3.8 or newer, nothing to install. It's also in this tracker's repository: <span class="mono">tools/pst_flash.py</span>.</p>
+      </div>
+    {/if}
+
+    {#if way === 'pio'}
+      <div class="block">
+        <div class="label">2 · Add an environment to platformio.ini</div>
+        <div class="cmd"><pre>{ini}</pre><button class="btn small" type="button" onclick={() => copy(ini, 'ini')}>{copied === 'ini' ? 'Copied' : 'Copy'}</button></div>
+        <p class="faint small"><span class="mono">extends</span> names the environment you build now; change it for another board.</p>
+      </div>
+      <div class="block">
+        <div class="label">3 · Upload</div>
+        <div class="cmd"><code>{upload}</code><button class="btn small" type="button" onclick={() => copy(upload, 'up')}>{copied === 'up' ? 'Copied' : 'Copy'}</button></div>
+        <p class="faint small">Writes the bootloader, partition table and app. While a recording runs, it asks what to do with it, in the terminal and here.</p>
+      </div>
+    {:else if way === 'ota'}
+      <div class="block">
+        <div class="label">1 · Add an environment to platformio.ini (no script needed)</div>
+        <div class="cmd"><pre>{otaIni}</pre><button class="btn small" type="button" onclick={() => copy(otaIni, 'ota')}>{copied === 'ota' ? 'Copied' : 'Copy'}</button></div>
+        {#if proxied}
+          <p class="warnline small">This page comes through a proxy or a name: put the tracker's own address on the network in <span class="mono">upload_port</span>. OTA doesn't go through a proxy.</p>
+        {/if}
+      </div>
+      <div class="block">
+        <div class="label">2 · Upload</div>
+        <div class="cmd"><code>{otaUpload}</code><button class="btn small" type="button" onclick={() => copy(otaUpload, 'otaup')}>{copied === 'otaup' ? 'Copied' : 'Copy'}</button></div>
+        {#if otaPort === null}
+          <p class="warnline small">The OTA endpoint is switched off on this tracker (<span class="mono">OTA_PORT=0</span>).</p>
+        {/if}
+        <p class="faint small">The tracker answers like an Arduino OTA device: only the app goes over (the tracker reads the partition table from the chip). A running recording is asked about here in the web UI, not in the terminal. Local network only (UDP {otaPort ?? 3232}), and your machine must accept the tracker's connection back.</p>
+      </div>
+    {:else if way === 'idf'}
+      <div class="block">
+        <div class="label">2 · Build and upload</div>
+        <div class="cmd"><pre>{idfCmd}</pre><button class="btn small" type="button" onclick={() => copy(idfCmd, 'idf')}>{copied === 'idf' ? 'Copied' : 'Copy'}</button></div>
+        <p class="faint small">Reads <span class="mono">build/flasher_args.json</span> (images, offsets, chip, flash settings), and the project name and version from <span class="mono">project_description.json</span>.</p>
+      </div>
+    {:else}
+      <div class="block">
+        <div class="label">2 · Upload what your build made</div>
+        <div class="cmd"><pre>{otherCmd}</pre><button class="btn small" type="button" onclick={() => copy(otherCmd, 'other')}>{copied === 'other' ? 'Copied' : 'Copy'}</button></div>
+        <p class="faint small">The chip comes from the image. A merged image is split along its partition table, so the board keeps its saved settings (NVS). <span class="mono">python pst_flash.py --help</span> lists the options.</p>
+      </div>
+    {/if}
+
+    <p class="faint small">Images already on the board (same checksum) aren't written again: usually the bootloader and partition table, or the whole build when it's unchanged. Per upload: <span class="mono">custom_tracker_on_recording</span>, <span class="mono">_when_asleep</span>, <span class="mono">_full_flash</span> in platformio.ini, or <span class="mono">--on-recording</span>, <span class="mono">--when-asleep</span>, <span class="mono">--full-flash</span>.</p>
   </section>
 
   <h3 class="sub">Last uploads</h3>
@@ -190,12 +282,12 @@ custom_tracker_url = ${url}
     {#if jobs.length}
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Time</th><th>From</th><th>Version</th><th>Git</th><th>Result</th><th>Took</th><th>Note</th></tr></thead>
+          <thead><tr><th>Time</th><th>From · via</th><th>Version</th><th>Git</th><th>Result</th><th>Took</th><th>Note</th></tr></thead>
           <tbody>
             {#each jobs as j (j.id)}
               <tr>
                 <td class="mono">{fmtClock(j.created).slice(0, 5)}</td>
-                <td>{j.meta.host ?? '?'}</td>
+                <td>{j.meta.host ?? '?'}{j.meta.source ? ` · ${VIA[j.meta.source] ?? j.meta.source}` : ''}</td>
                 <td class="mono">{j.meta.version ?? '–'}</td>
                 <td class="mono">{j.meta.git ?? '–'}</td>
                 <td><span class="res"><span class="dot" class:ok={j.status === 'done'} class:bad={j.status === 'failed'} class:flash={!j.finished}></span>{result(j)}</span></td>
@@ -235,6 +327,9 @@ custom_tracker_url = ${url}
   .radio input[type='radio'] { width: 16px; height: 16px; margin-top: 2px; accent-color: var(--accent); }
   .radio > span { display: flex; flex-direction: column; gap: 2px; }
   .secs { width: 70px; min-height: 28px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 12px; }
+  .ways { align-self: flex-start; flex-wrap: wrap; }
+  .warnline { color: var(--warn); }
+  .small .mono { white-space: nowrap; }
   .tokenrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .token { font-family: var(--mono); font-size: 12px; padding: 4px 8px; border-radius: 6px; background: var(--panel2); overflow-wrap: anywhere; }
   .confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }

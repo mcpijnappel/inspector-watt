@@ -78,7 +78,8 @@ services:
       DATA_DIR: /data
       MCP_URL: http://mcp:8300
       MCP_TOKEN: ${MCP_TOKEN:-}  # only the first time: LAN access for agents is then managed in Settings → Agents
-      FLASH_TOKEN: ${FLASH_TOKEN:-}  # only the first time: the PlatformIO upload token (random if empty)
+      FLASH_TOKEN: ${FLASH_TOKEN:-}  # only the first time: the upload token (random if empty)
+      OTA_PUBLIC_PORT: ${OTA_PORT:-3232}  # shown in Settings → Firmware upload (inside, it's always 3232)
     volumes:
       - ${DATA_DIR:-./data}:/data:z
     depends_on:
@@ -91,6 +92,9 @@ services:
       retries: 30
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
+      # Arduino OTA endpoint (PlatformIO upload_protocol = espota): where the web port is, unless OTA_BIND says
+      # otherwise. The upload token is its password. It connects back to the uploading machine over TCP.
+      - "${OTA_BIND:-${WEB_BIND:-127.0.0.1}}:${OTA_PORT:-3232}:3232/udp"
 
   # Agents (MCP): analyse sessions, read live data, edit phase rules; no hardware control. On this machine at
   # http://localhost:8300/mcp; on the LAN through the web port (/mcp) with the token from Settings → Agents.
@@ -113,7 +117,7 @@ services:
     build:
       context: ./frontend
       additional_contexts:
-        platformio: ./platformio  # the PlatformIO upload script, offered as a download (Settings → Firmware upload)
+        tools: ./tools  # pst_flash.py, the upload client, offered as a download (Settings → Firmware upload)
     restart: unless-stopped
     depends_on:
       - api

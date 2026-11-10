@@ -32,8 +32,9 @@ new firmware from PlatformIO, so an agent can change the firmware, measure the r
   runs low.
 - **Agents:** AI agents such as Claude Code analyse your sessions through MCP, and with hardware control
   switched on (off by default, asked for every call) power-cycle, record and use the sensor's USB console.
-- **Flashing:** `pio run -t upload` from any machine sends the build to the tracker, which flashes the
-  sensor over its own USB while the PPK2 keeps powering it.
+- **Flashing:** PlatformIO, ESP-IDF or any other build on the network sends its firmware to the tracker,
+  which flashes the sensor over its own USB while the PPK2 keeps powering it. PlatformIO can also upload to
+  the tracker as if it were an Arduino OTA device.
 
 | Session | Compare |
 |---|---|
@@ -47,7 +48,7 @@ Screenshots: the built-in simulator.
 - [Install](#install)
 - [Using it](#using-it)
 - [Agents (MCP)](#agents-mcp)
-- [Flashing from PlatformIO](#flashing-from-platformio)
+- [Flashing firmware](#flashing-firmware)
 - [Operations: update, backup, move, troubleshoot](#operations)
 - [Development](#development)
 - [Reference](#reference)
@@ -63,7 +64,7 @@ Screenshots: the built-in simulator.
 - The sensor (DUT, "device under test"). On this bench: a Seeed XIAO ESP32-C6 powered through its battery
   pins (see [Hardware notes](#hardware-notes)).
 - Optional: the sensor's **own USB port**, through an adapter that **blocks the 5 V** (data lines and ground
-  only), for its USB console and [flashing from PlatformIO](#flashing-from-platformio). A third free USB port.
+  only), for its USB console and [flashing firmware](#flashing-firmware). A third free USB port.
 
 **The computer it runs on**
 
@@ -273,45 +274,77 @@ Firmware uploads by an agent go through PlatformIO and its token (see below); to
 them, add an ask rule such as `"ask": ["Bash(pio run *upload*)"]` to the firmware project's
 `.claude/settings.json`.
 
-## Flashing from PlatformIO
+## Flashing firmware
 
-With the sensor's own USB port connected (5 V blocked, see [Requirements](#requirements)), `pio run -t upload`
-on any machine on the network sends the build to the tracker, which flashes it with esptool. The PPK2
-keeps powering the sensor the whole time.
+With the sensor's own USB port connected (5 V blocked, see [Requirements](#requirements)), a build on any
+machine on the network goes to the tracker, which flashes it with esptool (ESP32 chips for now). The PPK2
+keeps powering the sensor the whole time. Every way needs the **upload token**: Settings → Firmware upload
+shows it; put it in the environment variable `PST_FLASH_TOKEN` on the machine you upload from. Settings →
+Firmware upload also shows each setup below with this tracker's address filled in.
 
-1. Put `platformio/tracker_upload.py` in the firmware project, next to `platformio.ini` (or download it from
-   Settings → Firmware upload), and add an environment:
-   ```ini
-   [env:xiao_c6_tracker]
-   extends = env:seeed_xiao_esp32c6
-   upload_protocol = custom
-   extra_scripts = post:tracker_upload.py
-   custom_tracker_url = http://<tracker>:8080
-   ; custom_tracker_on_recording = ask    ; ask | keep | stop | after | cancel
-   ; custom_tracker_when_asleep = wait    ; wait | always | cycle (default: Settings → Firmware upload)
-   ; custom_tracker_full_flash = yes      ; write every image, also those already on the board
-   ```
-2. The upload token: **Settings → Firmware upload** shows it (and the `platformio.ini` lines with this
-   tracker's address). Put it in the environment variable `PST_FLASH_TOKEN` on the machine you upload from.
-3. `pio run -e xiao_c6_tracker -t upload`
+**PlatformIO.** Put [`tools/pst_flash.py`](tools/pst_flash.py) next to `platformio.ini` (or download it from
+Settings → Firmware upload), add an environment and run `pio run -e xiao_c6_tracker -t upload`:
+```ini
+[env:xiao_c6_tracker]
+extends = env:seeed_xiao_esp32c6
+upload_protocol = custom
+extra_scripts = post:pst_flash.py
+custom_tracker_url = http://<tracker>:8080
+; custom_tracker_on_recording = ask    ; ask | keep | stop | after | cancel
+; custom_tracker_when_asleep = wait    ; wait | always | cycle (default: Settings → Firmware upload)
+; custom_tracker_full_flash = yes      ; write every image, also those already on the board
+```
+
+**PlatformIO over Arduino OTA**, no script: the tracker answers like an ESP32 running ArduinoOTA (UDP
+3232, on the address `WEB_BIND` opens, or `OTA_BIND`) and flashes what it receives over USB.
+```ini
+[env:xiao_c6_ota]
+extends = env:seeed_xiao_esp32c6
+upload_protocol = espota
+upload_port = <tracker address>
+upload_flags = --auth=${sysenv.PST_FLASH_TOKEN}
+```
+Only the app goes over OTA: the tracker reads the partition table from the chip, writes the app into the
+factory partition (else `ota_0`) and erases otadata so it boots. A running recording is asked about in the
+web UI only. It works on the local network, not through a reverse proxy, and the uploading machine must
+accept the tracker's TCP connection back (a firewall may block it). A refused upload (not an app image,
+another flash running) fails at once; one that's accepted but fails while flashing ends after espota's
+5-minute wait with "No response from device".
+
+**ESP-IDF, arduino-cli and anything else**, with the same `pst_flash.py` as a command (Python 3.8+, no
+packages):
+```sh
+export PST_URL=http://<tracker>:8080 PST_FLASH_TOKEN=...
+idf.py build && python pst_flash.py build/        # ESP-IDF: flasher_args.json + project_description.json
+python pst_flash.py build/esp32.esp32.XIAO_ESP32C6/   # arduino-cli compile --export-binaries
+python pst_flash.py firmware.merged.bin           # esptool merge-bin, espflash save-image --merge
+python pst_flash.py firmware.bin                  # an app image alone: placed like an OTA upload
+python pst_flash.py 0x0 boot.bin 0x8000 partitions.bin 0x10000 app.bin
+python pst_flash.py --help                        # --chip, --on-recording, --when-asleep, --full-flash, --dry-run
+```
+The chip comes from the build or the image header. A merged image is split along its own partition table
+(bootloader, partition table, the partitions that hold data), so the erased gaps in it don't wipe the
+board's NVS (its saved settings). Version and project name come from the app image when the build doesn't
+say.
 
 What happens:
 
 - **Sensor asleep** (its USB port disappears in deep sleep): by default the upload waits for its next wake
   (its sleep cycle stays as it is) and power-cycles it with the PPK2 if it hasn't woken after 90 s. Or it
-  always waits (never power-cycles), or it power-cycles it right away. Set in Settings → Firmware upload, or per upload with
-  `custom_tracker_when_asleep`. While it waits, the banner can power-cycle it now or cancel. Power-cycling
-  needs the PPK2 voltage set by the tracker (switch the DUT on once).
+  always waits (never power-cycles), or it power-cycles it right away. Set in Settings → Firmware upload, or
+  per upload (`custom_tracker_when_asleep`, `--when-asleep`). While it waits, the banner can power-cycle it
+  now or cancel. Power-cycling needs the PPK2 voltage set by the tracker (switch the DUT on once).
 - **Recording running:** the upload asks (in the terminal, or answer in the web UI): keep recording and mark
   the flash as a `flash` event, stop the recording first, flash when the recording stops, or cancel.
-  `custom_tracker_on_recording` can answer up front. "After" queues it: the PlatformIO command ends right
-  away and the tracker flashes when the recording stops. Resets during and just after a marked flash don't
-  count as unexpected resets.
+  `custom_tracker_on_recording` / `--on-recording` can answer up front. "After" queues it: the upload command
+  ends right away and the tracker flashes when the recording stops. Resets during and just after a marked
+  flash don't count as unexpected resets.
 - An upload that's still waiting (for an answer, the recording or a wake) can be cancelled in the banner,
   and a newer upload replaces it. One that's flashing refuses new uploads until it's done.
 - **Images already on the board aren't written again** (esptool `--skip-flashed` compares checksums
   first, whoever flashed it): usually the bootloader and partition table, or the whole build when it's
-  unchanged. `custom_tracker_full_flash = yes` writes everything.
+  unchanged. A rebuild of the same code often isn't byte-for-byte the same (build timestamps in the code).
+  `custom_tracker_full_flash = yes` / `--full-flash` writes everything.
 - If esptool fails, the sensor is power-cycled and it's tried once more.
 
 In the web UI: the **USB** chip in the top bar shows the port (asleep, closed, console open, flashing), a
@@ -328,7 +361,7 @@ flash still sees USB (esptool's reset keeps the link up). The MCP server can't f
 
 Measured on the XIAO ESP32-C6: the port appears ~0.4 s after power-on; a 1.8 MB flash takes ~18 s
 including the power-cycle; the same build again ~3 s (nothing written); reading the whole 4 MB flash (a
-backup) takes ~20 s. Writing only changed sectors (esptool `--diff-with`) was tried and dropped: even a
+backup) takes ~20 s; over OTA the same 1.8 MB app arrives in ~1 s on the LAN. Writing only changed sectors (esptool `--diff-with`) was tried and dropped: even a
 one-constant code change shifts almost the whole app (401 of ~444 sectors), so it saved nothing worth its
 cost.
 
@@ -382,6 +415,7 @@ rsync -a data/ /path/to/backup/data/                                       # ful
 | Detail recording stops writing files | The disk reached `MIN_FREE_GB` free space. Free space or delete old sessions. |
 | Containers restart for no reason (Bazzite) | Run compose through `./dc`, not `docker compose` from `/home/...`. |
 | Upload says "flash token missing or wrong" | `PST_FLASH_TOKEN` must be the token from `/api/flash/settings`. |
+| OTA upload stops at "Waiting for device..." | The tracker couldn't connect back to the uploading machine: allow incoming TCP from the tracker there (the port espota picks is random; `upload_flags = --host_port=...` fixes it). |
 | Flash fails: "USB port didn't appear" | `ls -l /dev/dut-usb` while the sensor is awake: install the udev rule again (it has a `dut-usb` line now), check the adapter's cable. |
 | Firmware thinks USB is connected with the console closed | Something else opens the port: usually ModemManager, which the udev rule stops. |
 | Agent on another machine gets "401" | Switch on Settings → Agents → *Other machines on the network* and use the token shown there. |
@@ -405,6 +439,7 @@ and version tags):
 docker build --target test -t pst-capture-test capture && docker run --rm pst-capture-test
 docker build --target test -t pst-api-test api && docker run --rm pst-api-test
 docker build --target test -t pst-mcp-test mcp-server && docker run --rm pst-mcp-test
+docker run --rm -v "$PWD/tools":/t:ro,z -w /t python:3.13-slim python -m unittest discover -s /t
 (cd frontend && docker run --rm -v "$PWD":/app:z -w /app node:22-alpine npm run check)
 ```
 
@@ -438,6 +473,7 @@ Defaults are in `compose.yaml`; see `.env.example`.
 | `MIN_FREE_GB` | 10 | stop writing full-rate files below this much free disk |
 | `DATA_DIR` | `./data` | full-rate files |
 | `WEB_PORT`, `WEB_BIND` | 8080, 127.0.0.1 | web UI; `0.0.0.0` = the whole network |
+| `OTA_PORT`, `OTA_BIND` | 3232, as `WEB_BIND` | Arduino OTA endpoint (UDP) for PlatformIO's `espota` uploads |
 | `API_PORT`, `CAPTURE_PORT`, `MCP_PORT`, `DB_PORT` | 8000, 8100, 8300, 5432 | on 127.0.0.1 only |
 | `MCP_TOKEN` | – | first start only; then Settings → Agents |
 | `FLASH_TOKEN` | random | upload token, first start only; then `/api/flash/settings` |
@@ -493,7 +529,7 @@ Battery emulation in the start request: `"battery": {"chemistry": "lipo", "cells
 | POST | `/usb/open` `{"on": true}` | open/close the USB console (open = the firmware sees USB: no deep sleep) |
 | GET | `/usb/lines?after_seq=` | USB console output (not saved in sessions: it repeats the UART log) |
 | POST | `/usb/send` `{"text": "..."}`, `/usb/key` `{"key": "n"}` | send a line, or one key for a menu |
-| POST | `/flash` | flash images with esptool (only through the api's `/api/flash`, which checks the token) |
+| POST | `/flash` | flash images (only through the api's `/api/flash`, which checks the token): `{family: "esp32", chip?, images: [{offset?, data_b64}], app_only?, flash_mode?, ...}` |
 | GET | `/flash`, `/flash/{id}?after=`, `/flash/jobs` | the last or a given flash job (log from line `after`), or the last few without logs |
 | POST | `/flash/{id}/answer` `{"choice": "keep"}` | keep / stop / after / cancel when a recording is running |
 | POST | `/flash/{id}/cancel`, `/flash/{id}/now` | cancel a waiting upload; stop waiting for a wake and power-cycle now |

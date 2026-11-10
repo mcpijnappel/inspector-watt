@@ -1,4 +1,5 @@
 import base64
+import struct
 import time
 import types
 
@@ -220,7 +221,10 @@ def test_recording_stop_and_cancel():
 
 
 # images already on the chip (--skip-flashed) ----------------------------------------------------------------
-from capture.flash import EsptoolOutput, FlashJob, esptool_args  # noqa: E402
+from capture.flash import FlashJob  # noqa: E402
+from capture.flash_esp import (OPTIONS, EspBackend, EsptoolOutput, app_desc, app_slot, esptool_args, find_app,  # noqa: E402
+                               image_chip, parse_partition_table)
+from capture.sim import SIM_PARTITIONS, partition_table  # noqa: E402
 
 
 def flash_done(client, b):
@@ -244,7 +248,7 @@ def test_images_already_on_the_chip_are_skipped(client):
 
 
 def test_esptool_args():
-    r = FlashRequest([Image(0, b"x"), Image(0x10000, b"y")], "esp32c6")
+    r = FlashRequest([Image(0, b"x"), Image(0x10000, b"y")], "esp32c6", options=dict(OPTIONS))
     args = esptool_args(r, "/dev/x", ["/t/0.bin", "/t/1.bin"])
     assert args[args.index("write-flash"):][-5:] == ["--skip-flashed", "0x0", "/t/0.bin", "0x10000", "/t/1.bin"]
     r.full_flash = True
@@ -267,3 +271,70 @@ def test_esptool_output_parsing():
     out.finish()
     assert job.mac == "9c9e6efffe77b3a4"  # the first MAC line (EUI-64 on the C6), not BASE MAC
     assert job.skipped == [0x0] and job.progress == 75.0
+
+
+# app-only uploads (Arduino OTA, a single app .bin) and the ESP image helpers ----------------------------------
+def app_image(chip_id=13, version="1.2.3", project="blink", size=0x3000, fill=b"\x11"):
+    """A minimal ESP app image: header (24 bytes, chip id at 12), one segment header, esp_app_desc_t."""
+    hdr = bytes([0xE9, 1, 2, 0x2F]) + struct.pack("<I", 0x42000000) + bytes([0xEE, 0, 0, 0]) + struct.pack("<H", chip_id)
+    hdr += b"\0" * (24 - len(hdr))
+    desc = struct.pack("<IIII", 0xABCD5432, 0, 0, 0) + b"".join(
+        v.encode().ljust(n, b"\0") for v, n in ((version, 32), (project, 32), ("12:00:00", 16), ("Nov 10 2026", 16),
+                                                 ("v5.5", 32)))
+    return (hdr + struct.pack("<II", 0x3C000020, 256) + desc).ljust(size, fill)
+
+
+def app_only(data: bytes, **kw):
+    return {"images": [{"offset": None, "data_b64": base64.b64encode(data).decode()}], "app_only": True, **kw}
+
+
+def test_app_only_upload_goes_to_the_app_partition(client):
+    app = app_image()
+    j = flash_done(client, app_only(app))
+    assert j["chip"] == "esp32c6"  # from the image header
+    assert j["meta"]["version"] == "1.2.3" and j["meta"]["project"] == "blink"  # from esp_app_desc_t
+    assert [im["offset"] for im in j["images"]] == [0xE000, 0x10000]  # otadata erased + app0 (no factory)
+    assert any("partition 'app0' at 0x10000" in ln for ln in j["log"])
+    assert client.app.state.svc.usb.sim_factory.flash[0x10000] == app
+    again = flash_done(client, app_only(app))
+    assert [im["skipped"] for im in again["images"]] == [True, True]
+
+
+def test_app_only_refusals(client):
+    assert client.post("/flash", json=app_only(b"not an app" * 10)).status_code == 409
+    assert client.post("/flash", json={**app_only(app_image()), "images": [
+        {"offset": 0x10000, "data_b64": base64.b64encode(app_image()).decode()}]}).status_code == 409
+    assert client.post("/flash", json={**body(), "family": "rp2"}).status_code == 409
+    j = client.post("/flash", json=app_only(app_image(size=0x150000))).json()  # bigger than app0 (0x140000)
+    wait_for(lambda: client.get(f"/flash/{j['id']}").json()["status"] == "failed")
+    assert "doesn't fit" in client.get(f"/flash/{j['id']}").json()["error"]
+
+
+def test_chip_from_the_images(client):
+    b = body(chip="")
+    b["images"][0]["data_b64"] = base64.b64encode(app_image(chip_id=9)).decode()  # an S3 image
+    j = flash_done(client, b)
+    assert j["chip"] == "esp32s3"
+    unknown = body(chip="")  # no ESP image header anywhere
+    assert "chip unknown" in client.post("/flash", json=unknown).json()["detail"]
+
+
+def test_esp_image_helpers():
+    parts = parse_partition_table(partition_table(SIM_PARTITIONS))
+    assert [p.label for p in parts] == ["nvs", "otadata", "app0", "app1", "spiffs"]
+    target, otadata = app_slot(parts)
+    assert (target.label, target.offset, otadata.offset) == ("app0", 0x10000, 0xE000)
+    with_factory = parse_partition_table(partition_table([("factory", 0, 0x00, 0x20000, 0x100000), *SIM_PARTITIONS]))
+    assert app_slot(with_factory)[0].label == "factory"
+    assert image_chip(app_image(chip_id=5)) == "esp32c3" and image_chip(b"\x00" * 64) is None
+    assert app_desc(app_image())["idf"] == "v5.5"
+    # Arduino builds: the description is the precompiled framework's, so it says nothing about the sketch
+    req = FlashRequest([Image(None, app_image(project="arduino-lib-builder", version="8cabf2c"))],
+                       options={"app_only": True}, meta={})
+    EspBackend(types.SimpleNamespace(port="sim://")).check(req)
+    assert "version" not in req.meta and req.chip == "esp32c6"
+    # a merged image (esptool merge-bin): bootloader at 0, partition table at 0x8000, app at 0x10000
+    merged = bytearray(b"\xff" * 0x13000)
+    merged[0x8000:0x8C00] = partition_table(SIM_PARTITIONS)
+    merged[0x10000:0x13000] = app_image(version="9.9")
+    assert app_desc(find_app([Image(0, bytes(merged))]))["version"] == "9.9"

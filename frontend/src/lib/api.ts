@@ -482,7 +482,8 @@ export const api = {
   flashAnswer: (id: number, choice: FlashChoice) => req<FlashJob>('POST', `/api/flash/${id}/answer`, { choice }),
   flashCancel: (id: number) => req<FlashJob>('POST', `/api/flash/${id}/cancel`),
   flashNow: (id: number) => req<FlashJob>('POST', `/api/flash/${id}/now`),
-  flashSettings: () => req<{ token: string | null }>('GET', '/api/flash/settings'),
+  /** ota_port: the Arduino OTA endpoint's UDP port (null: switched off). */
+  flashSettings: () => req<{ token: string | null; ota_port: number | null }>('GET', '/api/flash/settings'),
   newFlashToken: () => req<{ token: string | null }>('POST', '/api/flash/token'),
 
   presets: () => req<Preset[]>('GET', '/api/presets'),
