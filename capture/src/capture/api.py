@@ -75,6 +75,7 @@ class FlashIn(BaseModel):
     flash_size: str = "keep"
     on_recording: str = "ask"
     when_asleep: str = ""
+    full_flash: bool = False
     meta: dict = {}
 
     def request(self) -> FlashRequest:
@@ -83,7 +84,7 @@ class FlashIn(BaseModel):
         except (binascii.Error, ValueError) as e:
             raise FlashError(f"image data is not base64: {e}") from e
         return FlashRequest(images, self.chip, self.flash_mode, self.flash_freq, self.flash_size, self.meta,
-                            self.on_recording, self.when_asleep)
+                            self.on_recording, self.when_asleep, self.full_flash)
 
 
 class ChoiceIn(BaseModel):

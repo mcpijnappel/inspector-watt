@@ -7,7 +7,9 @@ One job at a time:
 2. The USB console lets go of the port.
 3. The port must be there. It vanishes while the DUT deep-sleeps: either wait for its next wake (power-cycling it
    after wake_wait_s if it doesn't come), or power-cycle it right away with the PPK2.
-4. esptool write-flash, then a hard reset: the DUT boots the new firmware.
+4. esptool write-flash, then a hard reset: the DUT boots the new firmware. --skip-flashed: an image whose MD5
+   already matches the flash isn't written (the bootloader and partition table usually, or a whole build that's
+   already on the board), whoever flashed it.
 If esptool fails (e.g. the DUT fell asleep just before it connected), the DUT is power-cycled and it's tried once more.
 A job still waiting (for an answer, the recording or a wake) can be cancelled, and a newer upload replaces it.
 """
@@ -50,6 +52,11 @@ FLASH_FREQ = re.compile(r"^(keep|\d{1,3}m)$")
 FLASH_SIZE = re.compile(r"^(keep|detect|\d{1,3}MB)$")
 PERCENT = re.compile(r"(\d{1,3}(?:\.\d+)?)\s?%")
 META_KEYS = ("project", "env", "version", "git", "host", "user", "source")
+# esptool's output we read (esptool 5): the chip's MAC when it connects, which image it's on (only printed with
+# more than one), and an image --skip-flashed found on the chip already.
+MAC_LINE = re.compile(r"^MAC:\s+((?:[0-9a-fA-F]{2}:){5,7}[0-9a-fA-F]{2})\s*$")
+IMAGE_LINE = re.compile(r"^Writing '.*?(\d+)_0x[0-9a-f]+\.bin' at 0x")
+SKIPPED_LINE = re.compile(r" at 0x[0-9a-f]+ already in flash, skipping write\.$")
 
 
 class FlashError(RuntimeError):
@@ -76,6 +83,7 @@ class FlashRequest:
     meta: dict = field(default_factory=dict)
     on_recording: str = "ask"  # ask | keep | stop | after | cancel
     when_asleep: str = ""  # wait | cycle; "" = the tracker's setting
+    full_flash: bool = False  # write every image, also those already on the chip (no --skip-flashed)
 
     def check(self) -> None:
         if not self.images:
@@ -118,6 +126,8 @@ class FlashJob:
         self.end_idx: int | None = None
         self.wait_until: float | None = None  # waiting_wake: when it power-cycles instead
         self.waiting_for: str | None = None  # waiting_recording: the recording's name
+        self.mac: str | None = None  # the chip's MAC as esptool read it (hex, no colons): which board got flashed
+        self.skipped: list[int] | None = None  # offsets of images already on the chip (None: not flashed yet)
         self._log: list[str] = []
         self._lock = threading.Lock()
         self._answered = threading.Event()
@@ -158,7 +168,10 @@ class FlashJob:
             "session_id": self.session_id, "power_cycled": self.power_cycled, "meta": self.req.meta,
             "start_idx": self.start_idx, "end_idx": self.end_idx, "wait_until": self.wait_until,
             "waiting_for": self.waiting_for, "when_asleep": self.req.when_asleep or None,
-            "chip": self.req.chip, "images": [{"offset": im.offset, "bytes": len(im.data)} for im in self.req.images],
+            "chip": self.req.chip, "mac": self.mac, "full_flash": self.req.full_flash,
+            "images": [{"offset": im.offset, "bytes": len(im.data),
+                        "skipped": None if self.skipped is None else im.offset in self.skipped}
+                       for im in self.req.images],
             "bytes": sum(len(im.data) for im in self.req.images), "log": lines, "log_total": total,
         }
 
@@ -398,40 +411,37 @@ class Flasher:
 
     # esptool ---------------------------------------------------------------------------------------------
     def _esptool(self, job: FlashJob, port: str) -> bool:
-        if self.sim:
-            return self._sim_esptool(job)
         req = job.req
+        out = EsptoolOutput(job, len(req.images))
+        if self.sim:
+            ok = self._sim_esptool(job, out)
+            out.finish()
+            return ok
         with tempfile.TemporaryDirectory(prefix="flash-") as d:
-            args = [sys.executable, "-m", "esptool", "--chip", req.chip, "--port", port, "--baud", ESPTOOL_BAUD,
-                    # usb-reset: the USB-Serial/JTAG reset sequence. esptool only picks it by itself for ports
-                    # under /dev, and here the host's devices are under /host-dev.
-                    "--before", "usb-reset", "--after", "hard-reset",
-                    "write-flash", "-z", "--flash-mode", req.flash_mode, "--flash-freq", req.flash_freq,
-                    "--flash-size", req.flash_size]
+            paths = []
             for i, im in enumerate(req.images):
-                path = os.path.join(d, f"{i}_{im.offset:#x}.bin")
-                with open(path, "wb") as f:
+                paths.append(os.path.join(d, f"{i}_{im.offset:#x}.bin"))
+                with open(paths[-1], "wb") as f:
                     f.write(im.data)
-                args += [f"{im.offset:#x}", path]
-            job.say("$ esptool " + " ".join(a for a in args[3:] if not a.startswith(d)))
+            args = esptool_args(req, port, paths)
+            job.say("$ esptool " + " ".join(a for a in args[3:] if a not in paths))
             env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "120", "PYTHONUNBUFFERED": "1"}
             proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
             timer = threading.Timer(ESPTOOL_TIMEOUT_S, proc.kill)
             timer.start()
             try:
-                self._follow(job, proc, len(req.images))
+                self._follow(proc, out)
                 rc = proc.wait()
             finally:
                 timer.cancel()
+        out.finish()
         if rc != 0:
             job.say(f"esptool exited with {rc}")
         return rc == 0
 
-    def _follow(self, job: FlashJob, proc: subprocess.Popen, n_images: int) -> None:
-        """esptool's output into the job log, with overall progress from its per-image percentages."""
+    @staticmethod
+    def _follow(proc: subprocess.Popen, out: EsptoolOutput) -> None:
         buf = b""
-        done_images = 0
-        last_pct = -1.0
         while True:
             chunk = os.read(proc.stdout.fileno(), 4096)
             if not chunk:
@@ -439,33 +449,81 @@ class Flasher:
             buf += chunk
             *parts, buf = re.split(rb"[\r\n]", buf)
             for raw in parts:
-                line = raw.decode(errors="replace").strip()
-                if not line:
-                    continue
-                m = PERCENT.search(line)
-                if m and "Writing" in line:
-                    pct = float(m.group(1))
-                    job.progress = max(job.progress, min(99.0, (done_images + pct / 100) / n_images * 100))
-                    if int(pct) // 10 == int(last_pct) // 10:
-                        continue  # keep the log short: every 10 %
-                    last_pct = pct
-                elif line.startswith("Wrote"):
-                    done_images += 1
-                    last_pct = -1.0
-                    job.progress = max(job.progress, min(99.0, done_images / n_images * 100))
-                job.say(line)
-        if buf.strip():
-            job.say(buf.decode(errors="replace"))
+                out.line(raw.decode(errors="replace"))
+        out.line(buf.decode(errors="replace"))
 
-    def _sim_esptool(self, job: FlashJob) -> bool:
+    def _sim_esptool(self, job: FlashJob, out: EsptoolOutput) -> bool:
+        """esptool's output for these images, as esptool 5 words it (so the parser is tested too). The simulated
+        chip remembers what was written, for --skip-flashed."""
+        sim = self.usb.sim_factory
+        out.line(f"Connecting... Chip type: {job.req.chip} (simulated)")
+        out.line("MAC:                " + sim.mac)
         n = len(job.req.images)
-        job.say(f"Connecting... Chip type: {job.req.chip} (simulated)")
         for i, im in enumerate(job.req.images):
+            name = f"'/tmp/sim/{i}_{im.offset:#x}.bin'"
+            if n > 1:
+                out.line(f"Writing {name} at {im.offset:#010x}...")
+            if not job.req.full_flash:
+                out.line("Comparing flash contents against new data...")
+                if sim.flash.get(im.offset) == im.data:
+                    out.line(f"{name} at {im.offset:#010x} already in flash, skipping write.")
+                    continue
             for pct in (0, 25, 50, 75, 100):
-                job.say(f"Writing at {im.offset + len(im.data) * pct // 100:#010x} [{pct:3d} %]")
-                job.progress = max(job.progress, min(99.0, (i + pct / 100) / n * 100))
+                out.line(f"Writing at {im.offset + len(im.data) * pct // 100:#010x} [{pct:3d} %]")
                 time.sleep(0.05)
-            job.say(f"Wrote {len(im.data)} bytes at {im.offset:#010x} (simulated)")
-        job.say("Hard resetting via RTS pin...")
-        self.usb.sim_factory.flashed += 1
+            out.line(f"Wrote {len(im.data)} bytes at {im.offset:#010x} (simulated)")
+            out.line("Hash of data verified.")
+            sim.flash[im.offset] = im.data
+        out.line("Hard resetting via RTS pin...")
+        sim.flashed += 1
         return True
+
+
+def esptool_args(req: FlashRequest, port: str, paths: list[str]) -> list[str]:
+    args = [sys.executable, "-m", "esptool", "--chip", req.chip, "--port", port, "--baud", ESPTOOL_BAUD,
+            # usb-reset: the USB-Serial/JTAG reset sequence. esptool only picks it by itself for ports
+            # under /dev, and here the host's devices are under /host-dev.
+            "--before", "usb-reset", "--after", "hard-reset",
+            "write-flash", "-z", "--flash-mode", req.flash_mode, "--flash-freq", req.flash_freq,
+            "--flash-size", req.flash_size]
+    if not req.full_flash:
+        args.append("--skip-flashed")  # MD5 of each image against the flash first: equal = not written
+    for im, path in zip(req.images, paths):
+        args += [f"{im.offset:#x}", path]
+    return args
+
+
+class EsptoolOutput:
+    """esptool's output into the job log: overall progress, the chip's MAC, and which images were skipped."""
+
+    def __init__(self, job: FlashJob, n_images: int):
+        self.job = job
+        self.n = n_images
+        self.image = 0  # the image esptool is on (it only says so with more than one)
+        self.last_pct = -1.0
+        self.skipped: set[int] = set()
+
+    def line(self, line: str) -> None:
+        job = self.job
+        line = line.strip()
+        if not line:
+            return
+        if (m := MAC_LINE.match(line)) and job.mac is None:
+            job.mac = m.group(1).replace(":", "").lower()
+        elif m := IMAGE_LINE.match(line):
+            self.image = min(int(m.group(1)), self.n - 1)
+            self.last_pct = -1.0
+            job.progress = max(job.progress, min(99.0, self.image / self.n * 100))
+        elif SKIPPED_LINE.search(line):
+            self.skipped.add(self.image)
+            job.progress = max(job.progress, min(99.0, (self.image + 1) / self.n * 100))
+        elif (m := PERCENT.search(line)) and "Writing" in line:
+            pct = float(m.group(1))
+            job.progress = max(job.progress, min(99.0, (self.image + pct / 100) / self.n * 100))
+            if int(pct) // 10 == int(self.last_pct) // 10:
+                return  # keep the log short: every 10 %
+            self.last_pct = pct
+        job.say(line)
+
+    def finish(self) -> None:
+        self.job.skipped = sorted(self.job.req.images[i].offset for i in self.skipped)

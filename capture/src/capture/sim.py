@@ -145,6 +145,8 @@ class SimUsbDevice:
     def __init__(self):
         self.present = True
         self.flashed = 0  # simulated flashes (tests)
+        self.mac = "9c:9e:6e:00:00:01"  # what simulated esptool reads from the chip
+        self.flash: dict[int, bytes] = {}  # what simulated esptool wrote, by offset (for --skip-flashed)
 
     def open(self):
         if not self.present:

@@ -90,7 +90,12 @@ export type FlashJob = {
   power_cycled: boolean;
   meta: { project?: string; env?: string; version?: string; git?: string; host?: string; source?: string };
   chip: string;
-  images: { offset: number; bytes: number }[];
+  /** The chip's MAC as esptool read it (hex, no colons): which board got flashed. */
+  mac: string | null;
+  /** Written even if already on the board (no --skip-flashed). */
+  full_flash: boolean;
+  /** skipped: already on the board, not written (null: not flashed yet). */
+  images: { offset: number; bytes: number; skipped: boolean | null }[];
   bytes: number;
   /** PPK2 stream indices of the flash (live chart shading). */
   start_idx: number | null;
