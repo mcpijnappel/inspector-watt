@@ -31,6 +31,16 @@ jobs:
       - run: docker build --target test -t test-${{ matrix.service }} ${{ matrix.service }}
       - run: docker run --rm test-${{ matrix.service }}
 
+  # tools/pst_flash.py runs on the user's machine: test it on the oldest and newest Python it supports
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          for v in 3.8 3.13; do
+            docker run --rm -v "$PWD/tools:/t:ro" -w /t python:$v-slim python -m unittest discover -s /t
+          done
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -48,7 +58,7 @@ jobs:
       - run: npm run build
 
   images:
-    needs: [test, frontend]
+    needs: [test, tools, frontend]
     # Only the public repository publishes; the private one (same files) just runs the tests.
     if: >-
       github.repository == 'mcpijnappel/inspector-watt' && github.event_name == 'push' &&
@@ -88,8 +98,8 @@ jobs:
         with:
           context: ${{ matrix.context }}
           target: ${{ matrix.target }}
-          # the web image offers the PlatformIO upload script as a download
-          build-contexts: ${{ matrix.name == 'web' && 'platformio=platformio' || '' }}
+          # the web image offers tools/pst_flash.py (the upload client) as a download
+          build-contexts: ${{ matrix.name == 'web' && 'tools=tools' || '' }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

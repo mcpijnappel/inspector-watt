@@ -14,7 +14,7 @@
     { id: 'devices', label: 'Devices', hint: 'Boards on the bench, voltage limits' },
     { id: 'profiles', label: 'Phase profiles', hint: 'Phase rules, cycle types, record presets' },
     { id: 'measurement', label: 'Measurement & safety', hint: 'Idle power-off, spike filter, batteries' },
-    { id: 'firmware', label: 'Firmware upload', hint: 'DUT USB, PlatformIO, upload token' },
+    { id: 'firmware', label: 'Firmware upload', hint: 'DUT USB, upload token, build setup' },
     { id: 'storage', label: 'Storage', hint: 'Disk space and data per session' },
     { id: 'agents', label: 'Agents (MCP)', hint: 'Connect AI agents, LAN token' },
     { id: 'health', label: 'System health', hint: 'PPK2 stream, UART, services' },

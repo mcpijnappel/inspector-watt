@@ -63,18 +63,22 @@ class KeyIn(BaseModel):
 
 
 class ImageIn(BaseModel):
-    offset: int = Field(ge=0)
+    offset: int | None = Field(None, ge=0)  # None: the backend places it (esp32 app_only)
     data_b64: str
 
 
 class FlashIn(BaseModel):
+    """One upload. family picks the backend; the esp32 settings stay top-level (as uploads have always sent them)."""
+    family: str = "esp32"
     images: list[ImageIn] = Field(min_length=1, max_length=16)
-    chip: str
+    chip: str = ""  # "": from the images
     flash_mode: str = "keep"
     flash_freq: str = "keep"
     flash_size: str = "keep"
+    app_only: bool = False
     on_recording: str = "ask"
     when_asleep: str = ""
+    full_flash: bool = False
     meta: dict = {}
 
     def request(self) -> FlashRequest:
@@ -82,8 +86,10 @@ class FlashIn(BaseModel):
             images = [Image(im.offset, base64.b64decode(im.data_b64, validate=True)) for im in self.images]
         except (binascii.Error, ValueError) as e:
             raise FlashError(f"image data is not base64: {e}") from e
-        return FlashRequest(images, self.chip, self.flash_mode, self.flash_freq, self.flash_size, self.meta,
-                            self.on_recording, self.when_asleep)
+        options = {"flash_mode": self.flash_mode, "flash_freq": self.flash_freq, "flash_size": self.flash_size,
+                   "app_only": self.app_only} if self.family == "esp32" else {}
+        return FlashRequest(images, self.chip, self.family, options, self.meta, self.on_recording,
+                            self.when_asleep, self.full_flash)
 
 
 class ChoiceIn(BaseModel):

@@ -1,4 +1,4 @@
-"""Flashing the DUT over its own USB port with esptool, for uploads from PlatformIO.
+"""Flashing the DUT over its own USB port: the job flow, the same for every controller family.
 
 One job at a time:
 1. A recording is running: keep it (the flash becomes a 'flash' event, so its reboot counts as expected), stop it,
@@ -7,8 +7,8 @@ One job at a time:
 2. The USB console lets go of the port.
 3. The port must be there. It vanishes while the DUT deep-sleeps: either wait for its next wake (power-cycling it
    after wake_wait_s if it doesn't come), or power-cycle it right away with the PPK2.
-4. esptool write-flash, then a hard reset: the DUT boots the new firmware.
-If esptool fails (e.g. the DUT fell asleep just before it connected), the DUT is power-cycled and it's tried once more.
+4. The family's backend writes the images (esp32: esptool, flash_esp.py), then the DUT boots the new firmware.
+If that fails (e.g. the DUT fell asleep just before it connected), the DUT is power-cycled and it's tried once more.
 A job still waiting (for an answer, the recording or a wake) can be cancelled, and a newer upload replaces it.
 """
 
@@ -16,14 +16,10 @@ from __future__ import annotations
 
 import itertools
 import logging
-import os
-import re
-import subprocess
-import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from .service import CaptureService, DeviceError
 from .usb import UsbManager
@@ -34,8 +30,6 @@ MAX_TOTAL_BYTES = 16 * 2**20
 CHOICE_TIMEOUT_S = 300.0  # nobody answered "what about the recording?": cancel
 PORT_WAIT_S = 10.0  # after power-on: the port shows up within ~1 s
 POWER_OFF_S = 0.5
-ESPTOOL_TIMEOUT_S = 240.0
-ESPTOOL_BAUD = "921600"  # ignored by USB-Serial/JTAG, used by a USB-UART bridge
 KEEP_JOBS = 10
 MAX_LOG_LINES = 3000
 
@@ -44,11 +38,6 @@ DONE = ("done", "failed", "cancelled")
 WAITING = ("queued", "waiting_choice", "waiting_recording", "waiting_wake")  # nothing written yet: cancel/replace is safe
 WAKE_MODES = ("wait", "always", "cycle")  # wait = power-cycle after wake_wait_s; always = never power-cycle
 WAKE_WAIT_S = 90.0  # default: a bit longer than this firmware's 60 s deep sleep
-CHIP = re.compile(r"^esp32[a-z0-9]*$")
-FLASH_MODE = ("keep", "qio", "qout", "dio", "dout")
-FLASH_FREQ = re.compile(r"^(keep|\d{1,3}m)$")
-FLASH_SIZE = re.compile(r"^(keep|detect|\d{1,3}MB)$")
-PERCENT = re.compile(r"(\d{1,3}(?:\.\d+)?)\s?%")
 META_KEYS = ("project", "env", "version", "git", "host", "user", "source")
 
 
@@ -62,41 +51,46 @@ class FlashCancelled(Exception):
 
 @dataclass
 class Image:
-    offset: int
+    offset: int | None  # None: the backend works out where it goes (e.g. an ESP app image from Arduino OTA)
     data: bytes
 
 
 @dataclass
 class FlashRequest:
     images: list[Image]
-    chip: str
-    flash_mode: str = "keep"
-    flash_freq: str = "keep"
-    flash_size: str = "keep"
+    chip: str = ""  # "": the backend works it out from the images, if it can
+    family: str = "esp32"  # which backend flashes it
+    options: dict = field(default_factory=dict)  # the backend's own (esp32: flash_mode/freq/size, app_only)
     meta: dict = field(default_factory=dict)
     on_recording: str = "ask"  # ask | keep | stop | after | cancel
     when_asleep: str = ""  # wait | cycle; "" = the tracker's setting
+    full_flash: bool = False  # write every image, also those already on the chip
 
     def check(self) -> None:
+        """What every family shares; the backend checks the rest (chip, options, offsets)."""
         if not self.images:
             raise FlashError("no images to flash")
-        if not CHIP.match(self.chip):
-            raise FlashError(f"unknown chip {self.chip!r}")
-        if self.flash_mode not in FLASH_MODE or not FLASH_FREQ.match(self.flash_freq) or not FLASH_SIZE.match(self.flash_size):
-            raise FlashError("bad flash mode, frequency or size")
         if self.on_recording not in ("ask", *CHOICES):
             raise FlashError("on_recording must be ask, keep, stop, after or cancel")
         if self.when_asleep not in ("", *WAKE_MODES):
             raise FlashError("when_asleep must be wait, always or cycle")
-        offsets = [im.offset for im in self.images]
+        offsets = [im.offset for im in self.images if im.offset is not None]
         if len(set(offsets)) != len(offsets):
             raise FlashError("two images at the same offset")
-        for im in self.images:
-            if im.offset < 0 or im.offset % 0x1000 or im.offset >= 2**27 or not im.data:
-                raise FlashError(f"bad image at offset {im.offset:#x}")
+        if not all(im.data for im in self.images):
+            raise FlashError("empty image")
         if sum(len(im.data) for im in self.images) > MAX_TOTAL_BYTES:
             raise FlashError("images too large")
         self.meta = {k: str(v)[:200] for k, v in (self.meta or {}).items() if k in META_KEYS and v is not None}
+
+
+class Backend(Protocol):
+    """Flashes one controller family. check() runs when the upload comes in, flash() once the port is there."""
+    family: str
+
+    def check(self, req: FlashRequest) -> None: ...
+
+    def flash(self, job: FlashJob, port: str) -> bool: ...
 
 
 class FlashJob:
@@ -118,6 +112,8 @@ class FlashJob:
         self.end_idx: int | None = None
         self.wait_until: float | None = None  # waiting_wake: when it power-cycles instead
         self.waiting_for: str | None = None  # waiting_recording: the recording's name
+        self.mac: str | None = None  # the chip's MAC (hex, no colons) as the backend read it: which board got flashed
+        self.skipped: list[int] | None = None  # offsets of images already on the chip (None: not flashed yet)
         self._log: list[str] = []
         self._lock = threading.Lock()
         self._answered = threading.Event()
@@ -158,16 +154,21 @@ class FlashJob:
             "session_id": self.session_id, "power_cycled": self.power_cycled, "meta": self.req.meta,
             "start_idx": self.start_idx, "end_idx": self.end_idx, "wait_until": self.wait_until,
             "waiting_for": self.waiting_for, "when_asleep": self.req.when_asleep or None,
-            "chip": self.req.chip, "images": [{"offset": im.offset, "bytes": len(im.data)} for im in self.req.images],
+            "family": self.req.family, "chip": self.req.chip, "mac": self.mac, "full_flash": self.req.full_flash,
+            "images": [{"offset": im.offset, "bytes": len(im.data),
+                        "skipped": None if self.skipped is None else im.offset in self.skipped}
+                       for im in self.req.images],
             "bytes": sum(len(im.data) for im in self.req.images), "log": lines, "log_total": total,
         }
 
 
 class Flasher:
-    def __init__(self, svc: CaptureService, usb: UsbManager, sessions=None):
+    def __init__(self, svc: CaptureService, usb: UsbManager, sessions=None, backends: list[Backend] | None = None):
+        from .flash_esp import EspBackend  # (it imports this module)
         self.svc = svc
         self.usb = usb
         self.sessions = sessions  # SessionManager or None (no database)
+        self.backends = {b.family: b for b in (backends or [EspBackend(usb)])}
         self.jobs: list[FlashJob] = []
         self._lock = threading.Lock()
         self.sim = usb.port.startswith("sim://")
@@ -190,7 +191,11 @@ class Flasher:
         return self.jobs[-1] if self.jobs else None
 
     def submit(self, req: FlashRequest) -> FlashJob:
+        backend = self.backends.get(req.family)
+        if backend is None:
+            raise FlashError(f"can't flash {req.family!r} (this tracker: {', '.join(self.backends)})")
         req.check()
+        backend.check(req)
         replaced = None
         with self._lock:
             cur = next((j for j in self.jobs if not j.done), None)
@@ -264,11 +269,11 @@ class Flasher:
                     attempted = True
                     job.status = "flashing"
                     job.progress = 0.0
-                    if self._esptool(job, port):
+                    if self.backends[job.req.family].flash(job, port):
                         ok = True
                         break
                     if attempt == 1:
-                        job.say("esptool failed: power-cycling the DUT and trying once more")
+                        job.say("Flashing failed: power-cycling the DUT and trying once more")
             finally:
                 self.usb.release()
                 if attempted:
@@ -277,7 +282,7 @@ class Flasher:
             if ok:
                 job.finish("done")
             else:
-                job.finish("failed", "esptool failed (see the log)")
+                job.finish("failed", "flashing failed (see the log)")
         except FlashCancelled as e:
             job.finish("cancelled", str(e))
         except (FlashError, DeviceError) as e:
@@ -395,77 +400,3 @@ class Flasher:
                 "power_cycled": job.power_cycled, "job": job.id}
         if not self.sessions.note_event("flash", start, max(end, start + 1), **data):
             job.session_id = None  # the recording ended meanwhile
-
-    # esptool ---------------------------------------------------------------------------------------------
-    def _esptool(self, job: FlashJob, port: str) -> bool:
-        if self.sim:
-            return self._sim_esptool(job)
-        req = job.req
-        with tempfile.TemporaryDirectory(prefix="flash-") as d:
-            args = [sys.executable, "-m", "esptool", "--chip", req.chip, "--port", port, "--baud", ESPTOOL_BAUD,
-                    # usb-reset: the USB-Serial/JTAG reset sequence. esptool only picks it by itself for ports
-                    # under /dev, and here the host's devices are under /host-dev.
-                    "--before", "usb-reset", "--after", "hard-reset",
-                    "write-flash", "-z", "--flash-mode", req.flash_mode, "--flash-freq", req.flash_freq,
-                    "--flash-size", req.flash_size]
-            for i, im in enumerate(req.images):
-                path = os.path.join(d, f"{i}_{im.offset:#x}.bin")
-                with open(path, "wb") as f:
-                    f.write(im.data)
-                args += [f"{im.offset:#x}", path]
-            job.say("$ esptool " + " ".join(a for a in args[3:] if not a.startswith(d)))
-            env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "120", "PYTHONUNBUFFERED": "1"}
-            proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
-            timer = threading.Timer(ESPTOOL_TIMEOUT_S, proc.kill)
-            timer.start()
-            try:
-                self._follow(job, proc, len(req.images))
-                rc = proc.wait()
-            finally:
-                timer.cancel()
-        if rc != 0:
-            job.say(f"esptool exited with {rc}")
-        return rc == 0
-
-    def _follow(self, job: FlashJob, proc: subprocess.Popen, n_images: int) -> None:
-        """esptool's output into the job log, with overall progress from its per-image percentages."""
-        buf = b""
-        done_images = 0
-        last_pct = -1.0
-        while True:
-            chunk = os.read(proc.stdout.fileno(), 4096)
-            if not chunk:
-                break
-            buf += chunk
-            *parts, buf = re.split(rb"[\r\n]", buf)
-            for raw in parts:
-                line = raw.decode(errors="replace").strip()
-                if not line:
-                    continue
-                m = PERCENT.search(line)
-                if m and "Writing" in line:
-                    pct = float(m.group(1))
-                    job.progress = max(job.progress, min(99.0, (done_images + pct / 100) / n_images * 100))
-                    if int(pct) // 10 == int(last_pct) // 10:
-                        continue  # keep the log short: every 10 %
-                    last_pct = pct
-                elif line.startswith("Wrote"):
-                    done_images += 1
-                    last_pct = -1.0
-                    job.progress = max(job.progress, min(99.0, done_images / n_images * 100))
-                job.say(line)
-        if buf.strip():
-            job.say(buf.decode(errors="replace"))
-
-    def _sim_esptool(self, job: FlashJob) -> bool:
-        n = len(job.req.images)
-        job.say(f"Connecting... Chip type: {job.req.chip} (simulated)")
-        for i, im in enumerate(job.req.images):
-            for pct in (0, 25, 50, 75, 100):
-                job.say(f"Writing at {im.offset + len(im.data) * pct // 100:#010x} [{pct:3d} %]")
-                job.progress = max(job.progress, min(99.0, (i + pct / 100) / n * 100))
-                time.sleep(0.05)
-            job.say(f"Wrote {len(im.data)} bytes at {im.offset:#010x} (simulated)")
-        job.say("Hard resetting via RTS pin...")
-        self.usb.sim_factory.flashed += 1
-        return True

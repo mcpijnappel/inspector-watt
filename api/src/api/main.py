@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
@@ -22,6 +23,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 
 from .migrate import migrate
+from . import ota
 from . import resets as reset_finder
 from .agents import AgentAccess
 from .phases import (compile_wake, cycle_json, find_cycles, match_counts, mix_current, mix_parts, phase_rows, phase_stats, sleep_rule, snap_time,
@@ -32,6 +34,8 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@db
 CAPTURE_URL = os.environ.get("CAPTURE_URL", "http://capture:8100")
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 MCP_URL = os.environ.get("MCP_URL", "http://mcp:8300")
+OTA_PORT = int(os.environ.get("OTA_PORT", str(ota.OTA_PORT)))  # Arduino OTA endpoint (UDP); 0 = off
+OTA_PUBLIC_PORT = int(os.environ.get("OTA_PUBLIC_PORT", str(OTA_PORT)))  # where compose publishes it (shown in Settings)
 
 log = logging.getLogger("api")
 pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=8,
@@ -46,7 +50,16 @@ async def lifespan(app: FastAPI):
     await migrate(pool)
     await seed_mcp()
     await seed_flash()
+    ota_transport = None
+    if OTA_PORT:
+        try:
+            ota_transport, _ = await ota.start(ota_token, ota_submit, ota_result, port=OTA_PORT)
+            log.info("Arduino OTA endpoint on UDP %d", OTA_PORT)
+        except OSError as e:
+            log.warning("no Arduino OTA endpoint: UDP %d: %s", OTA_PORT, e)
     yield
+    if ota_transport:
+        ota_transport.close()
     await pool.close()
     await capture.aclose()
 
@@ -1167,8 +1180,8 @@ async def check_flash_token(request: Request) -> None:
 
 @app.get("/api/flash/settings")
 async def get_flash_settings():
-    """The upload token (anyone who can open the web UI can see it, like the MCP token)."""
-    return await flash_settings()
+    """The upload token (anyone who can open the web UI can see it, like the MCP token) and the OTA port."""
+    return {**await flash_settings(), "ota_port": OTA_PUBLIC_PORT if OTA_PORT else None}
 
 
 @app.post("/api/flash/token")
@@ -1176,6 +1189,40 @@ async def new_flash_token():
     """A new upload token; the old one stops working at once."""
     await save_setting("flash", {**await flash_settings(), "token": secrets.token_urlsafe(32)})
     return await flash_settings()
+
+
+async def ota_token() -> str | None:
+    return (await flash_settings()).get("token")
+
+
+async def ota_submit(image: bytes, ip: str) -> int | None:
+    """An Arduino OTA upload: its app image as a flash job like any upload (recording question in the web UI)."""
+    try:
+        r = await capture.post("/flash", json=ota.app_only_job(image, ip), timeout=60)
+    except httpx.HTTPError as e:
+        log.warning("OTA upload from %s: capture unreachable: %s", ip, e)
+        return None
+    if r.status_code != 200:
+        log.warning("OTA upload from %s refused: %s", ip, r.text[:200])
+        return None
+    return r.json()["id"]
+
+
+async def ota_result(job_id: int) -> bool:
+    """Wait for the OTA upload's flash job: True once flashed (or queued until the recording stops)."""
+    try:
+        while True:
+            await asyncio.sleep(ota.POLL_S)
+            j = (await capture.get(f"/flash/{job_id}", params={"after": 1 << 30})).json()
+            if j["status"] == "waiting_recording":
+                return True  # queued until the recording stops: the web UI shows the result
+            if j["status"] in ("done", "failed", "cancelled"):
+                if j["status"] != "done":
+                    log.warning("OTA flash job %d %s: %s", job_id, j["status"], j.get("error"))
+                return j["status"] == "done"
+    except httpx.HTTPError as e:
+        log.warning("OTA flash job %d: capture unreachable: %s", job_id, e)
+        return False
 
 
 @app.post("/api/flash")
