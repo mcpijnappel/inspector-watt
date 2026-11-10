@@ -6,6 +6,7 @@ printing debug lines over the fake UART.
 
 from __future__ import annotations
 
+import struct
 import threading
 import time
 
@@ -138,6 +139,19 @@ SIM_MENU_KEYS = (
 )
 
 
+# The simulated chip's partition table (Arduino's default layout): name, type, subtype, offset, size.
+SIM_PARTITIONS = [("nvs", 1, 0x02, 0x9000, 0x5000), ("otadata", 1, 0x00, 0xE000, 0x2000),
+                  ("app0", 0, 0x10, 0x10000, 0x140000), ("app1", 0, 0x11, 0x150000, 0x140000),
+                  ("spiffs", 1, 0x82, 0x290000, 0x160000)]
+
+
+def partition_table(parts) -> bytes:
+    """ESP partition table bytes (32-byte entries, then erased flash)."""
+    out = b"".join(b"\xaa\x50" + struct.pack("<BBII", t, st, off, size) + name.encode().ljust(16, b"\0") + b"\0" * 4
+                   for name, t, st, off, size in parts)
+    return out + b"\xff" * (0xC00 - len(out))
+
+
 class SimUsbDevice:
     """The DUT's USB port in the simulator. `present` is False while it 'sleeps' (tests set it); the tracker's
     power-cycle wakes it, like a real boot."""
@@ -146,7 +160,7 @@ class SimUsbDevice:
         self.present = True
         self.flashed = 0  # simulated flashes (tests)
         self.mac = "9c:9e:6e:00:00:01"  # what simulated esptool reads from the chip
-        self.flash: dict[int, bytes] = {}  # what simulated esptool wrote, by offset (for --skip-flashed)
+        self.flash: dict[int, bytes] = {0x8000: partition_table(SIM_PARTITIONS)}  # by offset, what's on the chip
 
     def open(self):
         if not self.present:
