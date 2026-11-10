@@ -10,6 +10,7 @@ Copy this file into the firmware project and add an environment to platformio.in
     custom_tracker_url = http://<tracker host>:8080
     ; custom_tracker_on_recording = ask    ; ask | keep | stop | after | cancel, when a recording is running
     ; custom_tracker_when_asleep = wait    ; wait (then power-cycle) | always (only wait) | cycle (power-cycle now)
+    ; custom_tracker_full_flash = yes      ; write every image, also those already on the board
 
 The token comes from the environment variable PST_FLASH_TOKEN (the tracker's upload token: Settings, or
 GET /api/flash/settings). PST_URL overrides custom_tracker_url.
@@ -137,6 +138,7 @@ def tracker_upload(source, target, env):
         "images": [{k: v for k, v in im.items() if not k.startswith("_")} for im in images],
         "on_recording": _option(env, "custom_tracker_on_recording", "ask") or "ask",
         "when_asleep": _option(env, "custom_tracker_when_asleep", "") or "",
+        "full_flash": str(_option(env, "custom_tracker_full_flash", "")).strip().lower() in ("yes", "true", "1", "on"),
         "meta": {"project": os.path.basename(project_dir), "env": env.subst("$PIOENV"),
                  "version": _firmware_version(env, project_dir), "git": _git(project_dir),
                  "host": socket.gethostname(), "source": "platformio"},
@@ -181,8 +183,10 @@ def tracker_upload(source, target, env):
     if job["status"] != "done":
         sys.stderr.write(f"Flash {job['status']}: {job.get('error') or ''}\n")
         return 1
+    skipped = sum(1 for im in job.get("images", []) if im.get("skipped"))
     print(f"Flashed{' (DUT power-cycled first)' if job.get('power_cycled') else ''}"
-          + (f", marked in recording {job['session_id']}" if job.get("session_id") else ""))
+          + (f", marked in recording {job['session_id']}" if job.get("session_id") else "")
+          + (f"; {skipped} of {len(job['images'])} image(s) already on the board, not written" if skipped else ""))
     return 0
 
 

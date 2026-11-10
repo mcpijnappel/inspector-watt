@@ -168,7 +168,8 @@ class FakeSessions:
 def flasher_with(sessions):
     svc = types.SimpleNamespace(ring=types.SimpleNamespace(end=100), ppk2=None)
     usb = types.SimpleNamespace(port="sim://", present=lambda: True, hold=lambda: None, release=lambda: None,
-                                sim_factory=types.SimpleNamespace(flashed=0, wake=lambda: None))
+                                sim_factory=types.SimpleNamespace(flashed=0, wake=lambda: None, mac="9c:9e:6e:00:00:01",
+                                                                  flash={}))
     return Flasher(svc, usb, sessions)
 
 
@@ -216,3 +217,53 @@ def test_recording_stop_and_cancel():
     f.answer(job.id, "cancel")
     wait_for(lambda: job.done)
     assert job.status == "cancelled" and not sm.stopped and f.usb.sim_factory.flashed == 0
+
+
+# images already on the chip (--skip-flashed) ----------------------------------------------------------------
+from capture.flash import EsptoolOutput, FlashJob, esptool_args  # noqa: E402
+
+
+def flash_done(client, b):
+    j = client.post("/flash", json=b).json()
+    wait_for(lambda: client.get(f"/flash/{j['id']}").json()["status"] == "done")
+    return client.get(f"/flash/{j['id']}").json()
+
+
+def test_images_already_on_the_chip_are_skipped(client):
+    first = flash_done(client, body())
+    assert first["mac"] == "9c9e6e000001" and [im["skipped"] for im in first["images"]] == [False, False]
+    again = flash_done(client, body())
+    assert [im["skipped"] for im in again["images"]] == [True, True] and again["progress"] == 100
+    assert any("already in flash, skipping write" in ln for ln in again["log"])
+    b = body()
+    b["images"][1]["data_b64"] = base64.b64encode(b"new!" * 1000).decode()  # the app changed
+    changed = flash_done(client, b)
+    assert [im["skipped"] for im in changed["images"]] == [True, False]
+    full = flash_done(client, body(full_flash=True))
+    assert full["full_flash"] and [im["skipped"] for im in full["images"]] == [False, False]
+
+
+def test_esptool_args():
+    r = FlashRequest([Image(0, b"x"), Image(0x10000, b"y")], "esp32c6")
+    args = esptool_args(r, "/dev/x", ["/t/0.bin", "/t/1.bin"])
+    assert args[args.index("write-flash"):][-5:] == ["--skip-flashed", "0x0", "/t/0.bin", "0x10000", "/t/1.bin"]
+    r.full_flash = True
+    assert "--skip-flashed" not in esptool_args(r, "/dev/x", ["/t/0.bin", "/t/1.bin"])
+
+
+def test_esptool_output_parsing():
+    """Lines as esptool 5.6 prints them (write-flash --skip-flashed, two images, the first one on the chip)."""
+    job = FlashJob(FlashRequest([Image(0, b"x"), Image(0x10000, b"z")], "esp32c6"))
+    out = EsptoolOutput(job, 2)
+    for ln in ["Connected to ESP32-C6 on /dev/ttyACM0:", "MAC:                9c:9e:6e:ff:fe:77:b3:a4",
+               "BASE MAC:           9c:9e:6e:77:b3:a4",
+               "Writing '/tmp/flash-k3/0_0x0.bin' at 0x00000000...", "Comparing flash contents against new data...",
+               "'/tmp/flash-k3/0_0x0.bin' at 0x00000000 already in flash, skipping write.",
+               "Writing '/tmp/flash-k3/1_0x10000.bin' at 0x00010000...", "Comparing flash contents against new data...",
+               "Flash will be erased from 0x00010000 to 0x001cbfff...", "Writing at 0x00100000 [ 50 %]",
+               "Wrote 1816736 bytes (1097583 compressed) at 0x00010000 in 13.6 seconds (1068.1 kbit/s).",
+               "Hash of data verified."]:
+        out.line(ln)
+    out.finish()
+    assert job.mac == "9c9e6efffe77b3a4"  # the first MAC line (EUI-64 on the C6), not BASE MAC
+    assert job.skipped == [0x0] and job.progress == 75.0

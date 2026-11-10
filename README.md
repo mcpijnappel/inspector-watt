@@ -289,6 +289,7 @@ keeps powering the sensor the whole time.
    custom_tracker_url = http://<tracker>:8080
    ; custom_tracker_on_recording = ask    ; ask | keep | stop | after | cancel
    ; custom_tracker_when_asleep = wait    ; wait | always | cycle (default: Settings → Firmware upload)
+   ; custom_tracker_full_flash = yes      ; write every image, also those already on the board
    ```
 2. The upload token: **Settings → Firmware upload** shows it (and the `platformio.ini` lines with this
    tracker's address). Put it in the environment variable `PST_FLASH_TOKEN` on the machine you upload from.
@@ -308,6 +309,9 @@ What happens:
   count as unexpected resets.
 - An upload that's still waiting (for an answer, the recording or a wake) can be cancelled in the banner,
   and a newer upload replaces it. One that's flashing refuses new uploads until it's done.
+- **Images already on the board aren't written again** (esptool `--skip-flashed` compares checksums
+  first, whoever flashed it): usually the bootloader and partition table, or the whole build when it's
+  unchanged. `custom_tracker_full_flash = yes` writes everything.
 - If esptool fails, the sensor is power-cycled and it's tried once more.
 
 In the web UI: the **USB** chip in the top bar shows the port (asleep, closed, console open, flashing), a
@@ -323,7 +327,10 @@ it, the firmware notices within a sleep retry or two (~30 s here) and sleeps aga
 flash still sees USB (esptool's reset keeps the link up). The MCP server can't flash or use the USB console.
 
 Measured on the XIAO ESP32-C6: the port appears ~0.4 s after power-on; a 1.8 MB flash takes ~18 s
-including the power-cycle; reading the whole 4 MB flash (a backup) takes ~20 s.
+including the power-cycle; the same build again ~3 s (nothing written); reading the whole 4 MB flash (a
+backup) takes ~20 s. Writing only changed sectors (esptool `--diff-with`) was tried and dropped: even a
+one-constant code change shifts almost the whole app (401 of ~444 sectors), so it saved nothing worth its
+cost.
 
 ## Operations
 

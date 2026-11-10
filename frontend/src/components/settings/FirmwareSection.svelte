@@ -97,6 +97,9 @@ custom_tracker_url = ${url}
     if (j.power_cycled) parts.push('power-cycled first');
     if (j.choice === 'stop') parts.push('recording stopped');
     else if (j.session_id) parts.push(`marked in session ${j.session_id}`);
+    const skipped = j.images.filter((im) => im.skipped).length;
+    if (j.status === 'done' && j.full_flash) parts.push('full flash');
+    else if (j.status === 'done' && skipped) parts.push(`${skipped} of ${j.images.length} images already on the board`);
     return parts.join(' · ');
   }
 </script>
@@ -178,6 +181,7 @@ custom_tracker_url = ${url}
       <div class="label">4 · Upload</div>
       <div class="cmd"><code>{upload}</code><button class="btn small" type="button" onclick={() => copy(upload, 'up')}>{copied === 'up' ? 'Copied' : 'Copy'}</button></div>
       <p class="faint small">While a recording runs, the upload asks what to do with it, in the terminal and here in the web UI.</p>
+      <p class="faint small">Images already on the board (same checksum) aren't written again: usually the bootloader and partition table, or the whole build when it's unchanged. <span class="mono">custom_tracker_full_flash = yes</span> writes everything.</p>
     </div>
   </section>
 
