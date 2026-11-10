@@ -46,7 +46,12 @@ class Uploader:
             for i in range(0, len(self.image), 1024):
                 conn.sendall(self.image[i:i + 1024])
                 ack = conn.recv(10).decode()
-                assert ack and "OK" not in ack  # espota stops at the first OK
+                last = i + 1024 >= len(self.image)
+                # espota: an OK in the last chunk's answer is success right away (the final OK can arrive in the
+                # same read when the flash is quick); an OK in an earlier answer would end the upload too soon
+                assert ack and (last or "OK" not in ack)
+                if last and "OK" in ack:
+                    return "result: OK"
             return "result: " + conn.recv(32).decode()
         except ConnectionResetError:
             return "reset"
