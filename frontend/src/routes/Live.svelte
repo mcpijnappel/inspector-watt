@@ -3,6 +3,8 @@
   import CurrentChart from '../components/CurrentChart.svelte';
   import LogPanel from '../components/LogPanel.svelte';
   import UsbConsole from '../components/UsbConsole.svelte';
+  import BusConsole from '../components/BusConsole.svelte';
+  import { bus } from '../lib/bus.svelte';
   import ControlStrip from '../components/ControlStrip.svelte';
   import { api, type ResetGroup } from '../lib/api';
   import { fmtAmps, fmtClock, fmtDuration, fmtLife } from '../lib/format';
@@ -115,6 +117,10 @@
   const uartStatus = $derived(
     st ? `UART ${st.uart.connected ? 'connected' : 'offline'} · ${st.uart.baud} baud · ${live.lines.length} lines` : '',
   );
+  // The tab actually shown: a saved USB or Bus tab falls back to UART when that source isn't there.
+  const shownTab = $derived(usb.tab === 'usb' && live.status?.usb ? 'usb' : usb.tab === 'bus' && bus.analyzer ? 'bus' : 'uart');
+  // The logic analyzer module: whether to offer the Bus tab.
+  $effect(() => bus.watch());
 </script>
 
 <div class="page">
@@ -223,9 +229,11 @@
     <div class="logwrap">
       {#if usb.tab === 'usb' && live.status?.usb}
         <UsbConsole head={logTabs} />
+      {:else if usb.tab === 'bus' && bus.analyzer}
+        <BusConsole head={logTabs} />
       {:else}
       <LogPanel lines={live.lines} selected={selected?.seq ?? null} onselect={(l) => (selected = selected?.seq === l.seq ? null : l)}
-        timeOf={(l) => fmtClock(l.wall)} follow={!live.paused} status={uartStatus} head={live.status?.usb ? logTabs : undefined} />
+        timeOf={(l) => fmtClock(l.wall)} follow={!live.paused} status={uartStatus} head={live.status?.usb || bus.analyzer ? logTabs : undefined} />
       {/if}
     </div>
   </div>
@@ -233,9 +241,15 @@
 
 {#snippet logTabs()}
   <div class="seg" role="group" aria-label="Log source">
-    <button type="button" aria-pressed={usb.tab === 'uart'} onclick={() => usb.setTab('uart')}>UART</button>
-    <button type="button" aria-pressed={usb.tab === 'usb'} onclick={() => usb.setTab('usb')}
-      title="The board's own USB console">USB{#if live.status?.usb?.wanted && live.status.usb.menu && usb.tab !== 'usb'}<span class="badge" aria-label="menu waiting"></span>{/if}</button>
+    <button type="button" aria-pressed={shownTab === 'uart'} onclick={() => usb.setTab('uart')}>UART</button>
+    {#if live.status?.usb}
+      <button type="button" aria-pressed={shownTab === 'usb'} onclick={() => usb.setTab('usb')}
+        title="The board's own USB console">USB{#if live.status?.usb?.wanted && live.status.usb.menu && usb.tab !== 'usb'}<span class="badge" aria-label="menu waiting"></span>{/if}</button>
+    {/if}
+    {#if bus.analyzer}
+      <button type="button" aria-pressed={shownTab === 'bus'} onclick={() => usb.setTab('bus')}
+        title="I2C and SPI decoded by the logic analyzer">Bus</button>
+    {/if}
   </div>
 {/snippet}
 

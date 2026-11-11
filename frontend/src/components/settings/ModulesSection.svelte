@@ -66,8 +66,9 @@
           {#if m.error && m.error !== 'not installed'}<p class="faint small">{m.error}</p>{/if}
         </div>
       {:else}
+        {@const wiring = d.settings.filter((s) => s.group === 'wiring')}
         <div class="s-card body rows">
-          {#each d.settings as s (s.key)}
+          {#each d.settings.filter((s) => !s.group) as s (s.key)}
             {@const v = m.values[s.key]}
             {@const id = `${m.name}.${s.key}`}
             {#if s.type === 'bool'}
@@ -94,6 +95,19 @@
               </form>
             {/if}
           {/each}
+          {#if wiring.length}
+            <div class="s-row wiring">
+              <div class="txt"><strong class="state">Wiring</strong><span class="hint">Which analyzer channel is on which pin of the board. Off: that bus isn't decoded.{saved.startsWith(`${m.name}.i2c`) || saved.startsWith(`${m.name}.spi`) ? ' Saved.' : ''}</span></div>
+              <div class="pins">
+                {#each wiring as s (s.key)}
+                  <label class="pin"><span class="faint small">{s.label}</span>
+                    <select class="input" value={m.values[s.key]} onchange={(e) => set(m, s.key, (e.target as HTMLSelectElement).value)} aria-label={s.label}>
+                      {#each s.choices ?? [] as c (c)}<option value={c}>{c}</option>{/each}
+                    </select></label>
+                {/each}
+              </div>
+            </div>
+          {/if}
         </div>
         {#if d.events.length || d.tools.length}
           <details class="s-fold s-card">
@@ -116,5 +130,9 @@
   .state { font-weight: 500; }
   .rows { gap: 0; }
   .pick { width: auto; min-height: 34px; }
+  .wiring { align-items: flex-start; }
+  .pins { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; flex: 2; min-width: min(100%, 300px); }
+  .pin { display: flex; flex-direction: column; gap: 3px; }
+  .pin .input { min-height: 32px; padding: 0 6px; }
   code { font-family: var(--mono); font-size: 12px; }
 </style>
