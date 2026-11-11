@@ -1301,3 +1301,9 @@ async def forward(request: Request, path: str) -> Response:
         raise HTTPException(502, f"capture service unreachable: {e}") from e
     return Response(r.content, r.status_code, media_type=r.headers.get("content-type"))
 
+
+
+# modules (modules/<name>/: the logic analyzer, …) -----------------------------------------------------------
+from . import modules  # noqa: E402 (needs the helpers above)
+
+modules.setup(app, capture, get_setting_value, save_setting)

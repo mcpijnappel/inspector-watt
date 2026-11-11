@@ -132,7 +132,8 @@ def test_only_safe_writes():
                  ("POST", "/api/agents/requests/1/answer"), ("POST", "/api/agents/revoke"), ("PUT", "/api/mcp"),
                  ("POST", "/api/flash/token"), ("POST", "/api/mcp/tokens"), ("DELETE", "/api/mcp/tokens/1"),
                  ("POST", "/api/mcp/tokens/1/renew"), ("PUT", "/api/measurement"),
-                 ("PUT", "/api/measurement/max-voltage")]:
+                 ("PUT", "/api/measurement/max-voltage"), ("POST", "/api/modules/analyzer/events"),
+                 ("PUT", "/api/modules/analyzer/settings"), ("POST", "/api/modules/analyzer/scan")]:
         assert not allowed(m, p), (m, p)
     for m, p in [("PUT", "/api/profiles/1"), ("POST", "/api/profiles"), ("POST", "/api/sessions/3/phases/test"),
                  ("POST", "/api/sessions/3/types/test"), ("PATCH", "/api/sessions/3"), ("GET", "/api/flash/jobs"),

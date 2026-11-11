@@ -223,12 +223,14 @@ class SessionManager:
             log.info("session %d stopped", a.id)
             return {"stopped": a.id}
 
-    def note_event(self, kind: str, start_idx: int, end_idx: int | None = None, **data) -> bool:
-        """An event from outside the recorder (e.g. a firmware flash) on the running session; False if none runs."""
+    def note_event(self, kind: str, start_idx: int, end_idx: int | None = None, *, module: str | None = None,
+                   **data) -> bool:
+        """An event from outside the recorder (a firmware flash, a module's decoded bus transaction) on the running
+        session; False if none runs."""
         with self._lock:
             if not self.active:
                 return False
-            self.active.rec.note(kind, start_idx, end_idx, **data)
+            self.active.rec.note(kind, start_idx, end_idx, module=module, **data)
             return True
 
     def _recorder(self, sid: int, started_at: datetime, s0: int, first_idx: int, cfg: SessionConfig,

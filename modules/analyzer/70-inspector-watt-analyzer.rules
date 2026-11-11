@@ -1,0 +1,7 @@
+# Inspector Watt logic analyzer module: access to FX2-based logic analyzers for sigrok (fx2lafw).
+# Install next to host-setup/70-inspector-watt.rules:
+#   sudo cp modules/analyzer/70-inspector-watt-analyzer.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+# 0925:3881 = before sigrok loads its firmware (Saleae Logic / clones, nanoDLA); 1d50:608c = fx2lafw running.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0925", ATTR{idProduct}=="3881", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1d50", ATTR{idProduct}=="608c", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="usb", ATTR{idVendor}=="04b4", ATTR{idProduct}=="8613", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"

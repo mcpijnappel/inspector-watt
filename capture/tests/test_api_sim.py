@@ -240,3 +240,26 @@ def test_voltage_limit_is_a_setting(client):
     assert client.put("/ppk2/device", json={"id": 1, "name": "b", "max_mv": 3300}).json()["max_voltage_mv"] == 3300
     s = client.put("/settings", json={"auto_stream": True, "min_free_gb": 20, "raw_mantissa_bits": 16}).json()
     assert s["auto_stream"] is True
+
+
+def test_module_events_on_the_timeline(client):
+    t = time.time()
+    r = client.post("/modules/events", json={"module": "analyzer:1", "items": [{"kind": "i2c", "t": t}]}).json()
+    assert r == {"live": 0, "recorded": 0, "skipped": 1}  # not measuring: no timeline yet
+    client.post("/ppk2/stream", json={"on": True})
+    deadline = time.time() + 5
+    while client.get("/status").json()["buffer"]["end_idx"] < 1000:
+        assert time.time() < deadline
+        time.sleep(0.05)
+    t = time.time()
+    items = [{"kind": "i2c", "t": t - 0.01, "end_t": t - 0.009, "data": {"addr": "0x44", "read": 6}}]
+    r = client.post("/modules/events", json={"module": "analyzer:1", "items": items}).json()
+    assert r == {"live": 1, "recorded": 0, "skipped": 0}  # no database here: Live only
+    live = client.get("/modules/events/live", params={"module": "analyzer"}).json()
+    end = client.get("/status").json()["buffer"]["end_idx"]
+    assert len(live) == 1 and live[0]["data"]["addr"] == "0x44" and live[0]["module"] == "analyzer:1"
+    # "now" is a little ahead of the samples received so far (they arrive in chunks): within half a second
+    assert abs(live[0]["start_idx"] - end) < 50_000 and live[0]["end_idx"] - live[0]["start_idx"] == 100  # 1 ms
+    assert client.get("/modules/events/live", params={"after_seq": live[0]["seq"]}).json() == []
+    assert client.post("/modules/events", json={"module": "Bad Name", "items": []}).status_code == 422
+
