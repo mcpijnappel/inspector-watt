@@ -4,6 +4,13 @@ name: inspector-watt
 # instead). The database is the stock TimescaleDB image; the api creates and migrates the schema.
 # IMAGE_TAG picks a version (e.g. 1.2); the simulator stack uses its own tag so its builds stay apart.
 
+# Modules (modules/<name>/, optional extras with their own containers): each one's services belong to a compose
+# profile, so they only start when switched on in .env, e.g. COMPOSE_PROFILES=analyzer. Paths in their compose
+# files are relative to this folder.
+include:
+  - path: modules/analyzer/compose.yaml
+    project_directory: .
+
 x-database-url: &database-url postgresql://tracker:${DB_PASSWORD:-tracker}@db:5432/tracker
 
 services:

@@ -188,14 +188,17 @@ class SessionRecorder:
         return self._wake is not None
 
     # events from outside (reconnects, restores, ...) -------------------------------------------------------
-    def note(self, kind: str, stream_idx: int, end_stream_idx: int | None = None, **data) -> None:
+    def note(self, kind: str, stream_idx: int, end_stream_idx: int | None = None, *, module: str | None = None,
+             **data) -> None:
+        """An event from outside the recorder; module = the module instance that made it ("analyzer:1")."""
         with self._notes_lock:
-            self._notes.append({"kind": kind, "start": stream_idx, "end": end_stream_idx, "data": data})
+            self._notes.append({"kind": kind, "start": stream_idx, "end": end_stream_idx, "data": data, "module": module})
 
-    def _event(self, kind: str, start: int, end: int | None, peak=None, mean=None, charge=None, data=None) -> dict:
+    def _event(self, kind: str, start: int, end: int | None, peak=None, mean=None, charge=None, data=None,
+               module: str | None = None) -> dict:
         return {"kind": kind, "start_idx": self.sidx(start), "end_idx": None if end is None else self.sidx(end),
                 "ts": self.ts(start), "end_ts": None if end is None else self.ts(end),
-                "peak_a": peak, "mean_a": mean, "charge_c": charge, "data": data or {}}
+                "peak_a": peak, "mean_a": mean, "charge_c": charge, "data": data or {}, "module": module}
 
     # main step -------------------------------------------------------------------------------------------
     def tick(self, final: bool = False) -> dict:
@@ -234,7 +237,7 @@ class SessionRecorder:
         with self._notes_lock:
             notes, self._notes = self._notes, []
         for n in notes:
-            batch["events"].append(self._event(n["kind"], n["start"], n["end"], data=n["data"]))
+            batch["events"].append(self._event(n["kind"], n["start"], n["end"], data=n["data"], module=n.get("module")))
         batch["progress"] = (self.processed_samples, self.charge_c)
         return batch
 

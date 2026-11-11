@@ -362,6 +362,33 @@ export type Measurement = {
   flash_wake_wait_s: number;
   fixed: { ring_seconds: number; ppk2_port: string; uart_port: string; usb_port: string };
 };
+/** A module's setting, as it describes it (the form is drawn from this). */
+export type ModuleSetting = {
+  key: string;
+  type: 'choice' | 'number' | 'bool' | 'text';
+  label: string;
+  hint?: string;
+  unit?: string;
+  default: unknown;
+  choices?: (number | string)[];
+  min?: number;
+  max?: number;
+};
+/** A module (modules/<name>/): installed or not, and what it says about itself. */
+export type ModuleInfo = {
+  name: string;
+  title: string;
+  installed: boolean;
+  error: string | null;
+  module: {
+    name: string; title: string; version: string; contract: number; description?: string;
+    health: { ok: boolean; detail: string | null };
+    settings: ModuleSetting[];
+    events: { kind: string; label: string; draw: string; color: string }[];
+    tools: { name: string; description: string; hardware: boolean }[];
+  } | null;
+  values: Record<string, unknown>;
+};
 export type StorageRow = { id: number; name: string; kind: string; status: string; started_at: string; duration_s: number; raw_bytes: number; raw_files: number; raw_seconds: number; raw_kinds: string[] };
 export type Storage = { disk: { total_bytes: number; free_bytes: number; used_bytes: number }; database_bytes: number | null; raw_bytes: number; min_free_gb: number | null; sessions: StorageRow[] };
 export type AgentRequest = {
@@ -475,6 +502,8 @@ export const api = {
   /** The tracker's voltage limit: the UI asks for a confirmation first; the api refuses it to agents. */
   setMaxVoltage: (mv: number) => req<Measurement>('PUT', '/api/measurement/max-voltage', { max_voltage_mv: mv }),
   storage: () => req<Storage>('GET', '/api/storage'),
+  modules: () => req<ModuleInfo[]>('GET', '/api/modules'),
+  setModuleSettings: (name: string, values: Record<string, unknown>) => req<Record<string, unknown>>('PUT', `/api/modules/${name}/settings`, values),
   mcp: () => req<McpStatus>('GET', '/api/mcp'),
   setMcpLan: (lan: boolean) => req<McpStatus>('PUT', '/api/mcp', { lan }),
   setMcpHardware: (hardware: boolean) => req<McpStatus>('PUT', '/api/mcp', { hardware }),

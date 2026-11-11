@@ -5,6 +5,7 @@
   import FirmwareSection from '../components/settings/FirmwareSection.svelte';
   import HealthSection from '../components/settings/HealthSection.svelte';
   import MeasurementSection from '../components/settings/MeasurementSection.svelte';
+  import ModulesSection from '../components/settings/ModulesSection.svelte';
   import ProfilesSection from '../components/settings/ProfilesSection.svelte';
   import StorageSection from '../components/settings/StorageSection.svelte';
   import '../components/settings/settings.css';
@@ -17,6 +18,7 @@
     { id: 'measurement', label: 'Measurement & safety', hint: 'Idle power-off, spike filter, batteries' },
     { id: 'firmware', label: 'Firmware upload', hint: 'Upload status, token, build setup' },
     { id: 'storage', label: 'Storage', hint: 'Disk space and data per session' },
+    { id: 'modules', label: 'Modules', hint: 'Logic analyzer and other extras' },
     { id: 'agents', label: 'Agents (MCP)', hint: 'Connect AI agents, hardware control' },
     { id: 'health', label: 'System health', hint: 'PPK2 stream, UART, services' },
   ] as const;
@@ -57,6 +59,7 @@
       {:else if current === 'measurement'}<MeasurementSection />
       {:else if current === 'firmware'}<FirmwareSection />
       {:else if current === 'storage'}<StorageSection />
+      {:else if current === 'modules'}<ModulesSection />
       {:else if current === 'agents'}<AgentsSection />
       {:else}<HealthSection />{/if}
     </main>
