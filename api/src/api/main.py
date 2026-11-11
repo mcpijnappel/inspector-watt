@@ -23,6 +23,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 
 from .migrate import migrate
+from .resources import Resources
 from . import ota
 from . import resets as reset_finder
 from .agents import AgentAccess
@@ -57,7 +58,9 @@ async def lifespan(app: FastAPI):
             log.info("Arduino OTA endpoint on UDP %d", OTA_PORT)
         except OSError as e:
             log.warning("no Arduino OTA endpoint: UDP %d: %s", OTA_PORT, e)
+    sampler = asyncio.create_task(resources.run())
     yield
+    sampler.cancel()
     if ota_transport:
         ota_transport.close()
     await pool.close()
@@ -113,6 +116,15 @@ async def ready():
 
 
 # sessions -------------------------------------------------------------------------------------------------
+resources = Resources(prefix=os.environ.get("CGROUP_PREFIX", "pst"))
+
+
+@app.get("/api/health/resources")
+async def health_resources(period: int = Query(3600, ge=60, le=86400)):
+    """CPU and memory of each service and of the machine: now, and min / avg / max over the period (seconds)."""
+    return resources.report(period)
+
+
 @app.get("/api/health")
 async def health():
     db = await q_one("SELECT 1 AS ok")

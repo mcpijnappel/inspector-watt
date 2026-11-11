@@ -415,6 +415,22 @@ export type McpToken = { id: number; name: string; token: string; created: strin
 export type McpStatus = { lan: boolean; hardware: boolean; tokens: McpToken[]; server: { up: boolean; error?: string; tools?: { name: string; description: string }[] } };
 export type Health = { db: boolean; capture: boolean; mcp: boolean };
 
+/** now / min / avg / max over the chosen period */
+export type Mmm = { now: number; min: number; avg: number; max: number };
+export type ServiceUse = {
+  name: string; running: boolean; peak: number | null; cpu_peak: number | null;
+  mem: Mmm | null; cpu: Mmm | null; mem_line: number[]; cpu_line: number[];
+};
+export type Resources = {
+  available: boolean; interval_s: number; period_s: number; kept_s: number; since_s: number;
+  host: {
+    cores: number; mem_total: number | null; mem: Mmm | null; cpu: Mmm | null; warn: ('memory' | 'cpu')[]; mem_line: number[]; cpu_line: number[];
+    mem_peak: number | null; cpu_peak: number | null;
+    uptime_s?: number; load?: [number, number, number]; swap_total?: number; swap_used?: number;
+  };
+  services: ServiceUse[];
+};
+
 export class ApiError extends Error {}
 
 async function req<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -524,6 +540,8 @@ export const api = {
   renewMcpToken: (id: number) => req<McpStatus>('POST', `/api/mcp/tokens/${id}/renew`),
   deleteMcpToken: (id: number) => req<McpStatus>('DELETE', `/api/mcp/tokens/${id}`),
   health: () => req<Health>('GET', '/api/health'),
+  resources: (periodS: number) => req<Resources>('GET', `/api/health/resources?period=${periodS}`),
+  analyzerStatus: () => req<{ stream: { running: boolean; rate: number; buffer_s: number; buffered_s: number; error: string | null; restarts: number } | null; devices: { driver: string; conn: string | null; description: string }[] }>('GET', '/api/modules/analyzer/status'),
   ppk2Metadata: () => req<{ raw: string; parsed: Record<string, unknown> }>('GET', '/api/device/ppk2/metadata'),
 
   usb: () => req<UsbStatus>('GET', '/api/device/usb'),

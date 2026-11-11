@@ -1,8 +1,11 @@
 <script lang="ts">
-  // System health: the services, the PPK2 stream, UART, the board's USB, live buffer and recording. Live from the status poll.
+  // System health: the services (running, CPU, memory), the modules, the PPK2 stream, UART, the board's USB, live buffer
+  // and recording. Live from the status poll.
   import { api, type Health } from '../../lib/api';
   import { devPath, fmtBytes, fmtClock, fmtDuration } from '../../lib/format';
   import { live } from '../../lib/live.svelte';
+  import ModulesHealth from './ModulesHealth.svelte';
+  import ResourcesPanel from './ResourcesPanel.svelte';
   import SectionHead from './SectionHead.svelte';
 
   let health = $state<Health | null>(null);
@@ -58,6 +61,8 @@
         {#if state}<span class="dot" class:ok={state === 'ok'} class:bad={state === 'bad'} class:warn={state === 'warn'}></span>{/if}{k}{state === 'ok' && k !== 'Recording writes' ? '' : `: ${v}`}</span>
     {/each}
   </section>
+  <ResourcesPanel />
+  <ModulesHealth />
   <div class="grid">
     {#if p}
       {@render card('PPK2', [

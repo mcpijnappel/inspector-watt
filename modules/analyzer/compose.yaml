@@ -9,6 +9,7 @@ services:
       context: ./modules/analyzer
       target: runtime
     restart: unless-stopped
+    cgroup_parent: ${CGROUP_PREFIX:-pst}-analyzer.slice  # its CPU and memory on Settings → Health
     user: "${UID:-1000}:${GID:-1000}"
     environment:
       API_URL: http://api:8000
