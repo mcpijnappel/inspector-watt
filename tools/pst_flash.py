@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""pst_flash.py: upload firmware through Inspector Watt. The tracker flashes the DUT over its own USB port while the
-PPK2 keeps powering it (and wakes it first if it's asleep). One file, Python 3.8+, standard library only.
+"""pst_flash.py: upload firmware through Inspector Watt. The tracker flashes the board over its own USB port: an ESP32
+while the PPK2 keeps powering it (and wakes it first if it's asleep), an RP2040/RP2350 with picotool (by default on
+USB power, without touching the PPK2). One file, Python 3.8+, standard library only.
 
 As a command, from any build system:
 
     python pst_flash.py build/                      ESP-IDF build folder (flasher_args.json)
-    python pst_flash.py build/esp32.esp32.xiao/     arduino-cli --export-binaries folder (*.merged.bin)
+    python pst_flash.py build/esp32.esp32.xiao/     arduino-cli --export-binaries folder (*.merged.bin or *.uf2)
     python pst_flash.py firmware.merged.bin         a merged image (written at 0x0)
     python pst_flash.py firmware.bin                one app image: the tracker puts it in the app partition
     python pst_flash.py 0x0 boot.bin 0x8000 pt.bin 0x10000 app.bin
+    python pst_flash.py firmware.uf2                RP2040 / RP2350 (pico-sdk, arduino-pico)
     python pst_flash.py --help                      all options
 
 As PlatformIO's upload command (platformio.ini, this file next to it):
@@ -21,6 +23,9 @@ As PlatformIO's upload command (platformio.ini, this file next to it):
     ; custom_tracker_on_recording = ask    ; ask | keep | stop | after | cancel, when a recording is running
     ; custom_tracker_when_asleep = wait    ; wait (then power-cycle) | always (only wait) | cycle (power-cycle now)
     ; custom_tracker_full_flash = yes      ; write every image, also those already on the board
+    ; custom_tracker_power = ppk2          ; ppk2 | usb: what powers the board (default: esp32 ppk2, rp2040 usb)
+
+The same for an RP2040 / RP2350 (arduino-pico): extends = env:seeed_xiao_rp2040 (or your pico environment).
 
 The token comes from the environment variable PST_FLASH_TOKEN (the tracker's upload token: Settings → Firmware
 upload). PST_URL sets the tracker (or --url, or custom_tracker_url).
@@ -47,10 +52,17 @@ import urllib.request
 POLL_S = 0.5
 ON_RECORDING = ("ask", "keep", "stop", "after", "cancel")
 WHEN_ASLEEP = ("wait", "always", "cycle")
+POWER = ("ppk2", "usb")
 # ESP image format: the chip an image was built for (esptool's IMAGE_CHIP_ID per target).
 CHIP_IDS = {0: "esp32", 2: "esp32s2", 5: "esp32c3", 9: "esp32s3", 12: "esp32c2", 13: "esp32c6", 16: "esp32h2",
             18: "esp32p4", 20: "esp32c61", 23: "esp32c5", 25: "esp32h21", 28: "esp32h4"}
 APP_DESC_MAGIC = 0xABCD5432
+# UF2 (RP2040 / RP2350): 512-byte blocks, each with the chip family it's for.
+UF2_MAGIC = (0x0A324655, 0x9E5D5157)
+UF2_END = 0x0AB16F30
+UF2_FAMILIES = {0xE48BFF56: "rp2040", 0xE48BFF59: "rp2350", 0xE48BFF5A: "rp2350", 0xE48BFF5B: "rp2350"}
+UF2_FAMILY_ID = {"rp2040": 0xE48BFF56, "rp2350": 0xE48BFF59}  # for a .bin turned into a UF2 (rp2350: Arm)
+RP_FLASH = 0x10000000
 
 
 class UploadError(Exception):
@@ -69,15 +81,18 @@ class Upload:
         self.meta.setdefault("source", source)
         self.meta.setdefault("host", socket.gethostname())
 
-    def payload(self, on_recording="ask", when_asleep="", full_flash=False):
+    def payload(self, on_recording="ask", when_asleep="", full_flash=False, power=""):
         return {"family": self.family, "chip": self.chip, **self.options,
                 "images": [{"offset": off, "data_b64": base64.b64encode(data).decode()} for off, data, _ in self.images],
-                "on_recording": on_recording, "when_asleep": when_asleep, "full_flash": full_flash,
+                "on_recording": on_recording, "when_asleep": when_asleep, "full_flash": full_flash, "power": power,
                 "meta": {k: v for k, v in self.meta.items() if v}}
 
     def describe(self):
-        where = ", ".join(f"{name} @ {off:#x}" if off is not None else f"{name} (app partition)"
-                          for off, _, name in self.images)
+        if self.family == "rp2":
+            where = ", ".join(f"{name} (UF2, {len(data)} bytes)" for _, data, name in self.images)
+        else:
+            where = ", ".join(f"{name} @ {off:#x}" if off is not None else f"{name} (app partition)"
+                              for off, _, name in self.images)
         return f"chip {self.chip or '?'}, {where}"
 
 
@@ -91,6 +106,44 @@ def image_chip(data):
 def is_app_image(data):
     """An ESP app image (not a bootloader or a merged image): esp_app_desc_t right after the headers."""
     return len(data) > 36 and data[0] == 0xE9 and struct.unpack_from("<I", data, 32)[0] == APP_DESC_MAGIC
+
+
+# UF2 images (RP2040 / RP2350) -----------------------------------------------------------------------------------
+def is_uf2(data):
+    return len(data) >= 512 and struct.unpack_from("<2I", data) == UF2_MAGIC
+
+
+def uf2_chip(data):
+    """The chip a UF2 file is for, from its blocks' family IDs ("" if none says)."""
+    for i in range(0, len(data) - 511, 512):
+        magic0, magic1, flags = struct.unpack_from("<3I", data, i)
+        if (magic0, magic1) == UF2_MAGIC and flags & 0x2000:
+            chip = UF2_FAMILIES.get(struct.unpack_from("<I", data, i + 28)[0])
+            if chip:
+                return chip
+    return ""
+
+
+def bin_to_uf2(data, chip, base=RP_FLASH):
+    """A raw flash image (written at the start of flash) as UF2 blocks of 256 bytes, like picotool writes them."""
+    chunks = [data[i:i + 256] for i in range(0, len(data), 256)]
+    out = []
+    for n, chunk in enumerate(chunks):
+        head = struct.pack("<8I", UF2_MAGIC[0], UF2_MAGIC[1], 0x2000, base + n * 256, 256, n, len(chunks),
+                           UF2_FAMILY_ID[chip])
+        out.append(head + chunk.ljust(476, b"\0") + struct.pack("<I", UF2_END))
+    return b"".join(out)
+
+
+def from_uf2(path, data=None):
+    data = data or _read(path)
+    if not is_uf2(data):
+        raise UploadError(f"{path} isn't a UF2 file")
+    name = os.path.basename(path)
+    project = name[:-4] if name.endswith(".uf2") else name
+    project = project[:-4] if project.endswith(".ino") else project  # arduino-cli: blink.ino.uf2
+    return Upload([(None, data, name)], uf2_chip(data), family="rp2",
+                  meta={"project": project, "git": _git(os.path.dirname(os.path.abspath(path)))}, source="uf2")
 
 
 def _read(path):
@@ -138,12 +191,14 @@ def from_file(path):
     """One .bin: an app image (the tracker puts it in the app partition) or a merged image (written at 0x0)."""
     data = _read(path)
     name = os.path.basename(path)
+    if is_uf2(data):
+        return from_uf2(path, data)
     meta = {"git": _git(os.path.dirname(os.path.abspath(path)))}
     if is_app_image(data):
         return Upload([(None, data, name)], image_chip(data), options={"app_only": True}, meta=meta, source="app image")
     if data[0] == 0xE9:
         return Upload(split_merged(data, name), image_chip(data), meta=meta, source="merged image")
-    raise UploadError(f"{path} isn't an ESP image (give offsets: 0x10000 {name})")
+    raise UploadError(f"{path} isn't an ESP image or a UF2 file (ESP: give offsets, like 0x10000 {name})")
 
 
 SECTOR = 0x1000
@@ -192,13 +247,19 @@ def from_pairs(words):
 
 
 def from_dir(path):
-    """A build folder: ESP-IDF's (flasher_args.json) or one with a merged image (arduino-cli, esptool merge-bin)."""
+    """A build folder: ESP-IDF's (flasher_args.json), one with a merged image (arduino-cli, esptool merge-bin), or
+    one with a UF2 file (arduino-cli for RP2040/RP2350, pico-sdk's build/)."""
     if os.path.exists(os.path.join(path, "flasher_args.json")):
         return from_idf(path)
     merged = sorted(glob.glob(os.path.join(path, "*.merged.bin")) + glob.glob(os.path.join(path, "*merged*.bin")))
     if merged:
         return from_file(merged[0])
-    raise UploadError(f"{path}: no flasher_args.json (ESP-IDF) or *.merged.bin in it")
+    uf2s = sorted(glob.glob(os.path.join(path, "*.uf2")))
+    if len(uf2s) == 1:
+        return from_uf2(uf2s[0])
+    if uf2s:
+        raise UploadError(f"{path} has {len(uf2s)} .uf2 files: name the one to upload")
+    raise UploadError(f"{path}: no flasher_args.json (ESP-IDF), *.merged.bin or *.uf2 in it")
 
 
 def from_sources(words):
@@ -209,7 +270,10 @@ def from_sources(words):
 
 
 def from_platformio(env, source):
-    """The images and offsets PlatformIO's own esptool upload would write."""
+    """The images and offsets PlatformIO's own esptool upload would write; for an RP2040/RP2350 build its UF2."""
+    mcu = env.BoardConfig().get("build.mcu", "")
+    if mcu.startswith("rp2"):
+        return _platformio_rp2(env, source, mcu)
     images = [(env.subst(off), env.subst(path)) for off, path in env.get("FLASH_EXTRA_IMAGES", [])]
     images.append((env.subst("$ESP32_APP_OFFSET"), str(source[0])))
     board = env.BoardConfig()
@@ -221,6 +285,24 @@ def from_platformio(env, source):
             "version": _pio_version(env, project_dir), "git": _git(project_dir)}
     return Upload(sorted((int(off, 0), _read(path), os.path.basename(path)) for off, path in images),
                   board.get("build.mcu", "esp32"), options=options, meta=meta, source="platformio")
+
+
+def _platformio_rp2(env, source, mcu):
+    """arduino-pico (platform raspberrypi): the build's firmware.uf2, else its .bin turned into one."""
+    chip = "rp2350" if mcu.startswith("rp2350") else "rp2040"
+    stem = os.path.splitext(str(source[0]))[0]  # firmware.elf or firmware.bin
+    uf2 = stem + ".uf2"
+    if os.path.exists(uf2):
+        data = _read(uf2)
+    elif os.path.exists(stem + ".bin"):
+        data, uf2 = bin_to_uf2(_read(stem + ".bin"), chip), stem + ".bin"
+    else:
+        raise UploadError(f"no {os.path.basename(uf2)} or .bin next to {os.path.basename(str(source[0]))}")
+    project_dir = env.subst("$PROJECT_DIR")
+    meta = {"project": os.path.basename(project_dir), "env": env.subst("$PIOENV"),
+            "version": _pio_version(env, project_dir), "git": _git(project_dir)}
+    return Upload([(None, data, os.path.basename(uf2))], uf2_chip(data) or chip, family="rp2", meta=meta,
+                  source="platformio")
 
 
 def _pio_version(env, project_dir):
@@ -280,7 +362,7 @@ def _ask_in_terminal(state):
     state["answer"] = {"k": "keep", "s": "stop", "a": "after", "c": "cancel"}.get(line[:1])
 
 
-def send(upload, url, token, on_recording="ask", when_asleep="", full_flash=False):
+def send(upload, url, token, on_recording="ask", when_asleep="", full_flash=False, power=""):
     """Upload, follow the job's log, answer the recording question. 0 when flashed (or queued), else 1."""
     url = (url or "").rstrip("/")
     if not url:
@@ -291,7 +373,7 @@ def send(upload, url, token, on_recording="ask", when_asleep="", full_flash=Fals
         return 1
     print(f"Tracker: {url}  {upload.describe()}")
     try:
-        job = _request("POST", f"{url}/api/flash", token, upload.payload(on_recording, when_asleep, full_flash))
+        job = _request("POST", f"{url}/api/flash", token, upload.payload(on_recording, when_asleep, full_flash, power))
         seen = 0
         asked = False
         state = {"answer": None}
@@ -329,7 +411,7 @@ def send(upload, url, token, on_recording="ask", when_asleep="", full_flash=Fals
         sys.stderr.write(f"Flash {job['status']}: {job.get('error') or ''}\n")
         return 1
     skipped = sum(1 for im in job.get("images", []) if im.get("skipped"))
-    print(f"Flashed{' (DUT power-cycled first)' if job.get('power_cycled') else ''}"
+    print(f"Flashed{' (board power-cycled first)' if job.get('power_cycled') else ''}"
           + (f", marked in recording {job['session_id']}" if job.get("session_id") else "")
           + (f"; {skipped} of {len(job['images'])} image(s) already on the board, not written" if skipped else ""))
     return 0
@@ -339,16 +421,19 @@ def send(upload, url, token, on_recording="ask", when_asleep="", full_flash=Fals
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="pst_flash.py", formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Upload firmware through Inspector Watt (the tracker flashes the DUT over its own USB port).",
-        epilog="SOURCE: an ESP-IDF build folder or its flasher_args.json, a folder with a *.merged.bin, a merged or\n"
-               "app .bin, or offset/file pairs (0x0 boot.bin 0x10000 app.bin).\n"
+        description="Upload firmware through Inspector Watt (the tracker flashes the board over its own USB port).",
+        epilog="SOURCE: an ESP-IDF build folder or its flasher_args.json, a folder with a *.merged.bin or a *.uf2, a\n"
+               "merged or app .bin, a .uf2 (RP2040/RP2350), or offset/file pairs (0x0 boot.bin 0x10000 app.bin).\n"
                "PST_URL and PST_FLASH_TOKEN (the tracker's upload token) come from the environment.")
     p.add_argument("source", nargs="+", metavar="SOURCE")
     p.add_argument("--url", default=os.environ.get("PST_URL", ""), help="the tracker, like http://tracker:8080")
-    p.add_argument("--chip", help="the chip (default: from the build or the image header), like esp32c6")
+    p.add_argument("--chip", help="the chip (default: from the build or the image), like esp32c6 or rp2040")
     p.add_argument("--on-recording", choices=ON_RECORDING, default="ask", help="when a recording is running")
     p.add_argument("--when-asleep", choices=WHEN_ASLEEP, default="", help="default: the tracker's setting")
     p.add_argument("--full-flash", action="store_true", help="write every image, also those already on the board")
+    p.add_argument("--power", choices=POWER, default="",
+                   help="what powers the board: ppk2 (wake / power-cycle it) or usb (just plugged in); "
+                        "default: esp32 ppk2, rp2040/rp2350 usb")
     p.add_argument("--flash-mode", help="override the build's (esp32: keep, qio, dio, ...)")
     p.add_argument("--flash-freq", help="override the build's (esp32: keep, 40m, 80m, ...)")
     p.add_argument("--flash-size", help="override the build's (esp32: keep, detect, 4MB, ...)")
@@ -367,7 +452,8 @@ def main(argv=None):
         print(f"Would upload ({upload.meta.get('source')}): {upload.describe()}")
         print(f"  options {upload.options or '-'}; meta {json.dumps({k: v for k, v in upload.meta.items() if v})}")
         return 0
-    return send(upload, a.url, os.environ.get("PST_FLASH_TOKEN", ""), a.on_recording, a.when_asleep, a.full_flash)
+    return send(upload, a.url, os.environ.get("PST_FLASH_TOKEN", ""), a.on_recording, a.when_asleep, a.full_flash,
+                a.power)
 
 
 # PlatformIO -----------------------------------------------------------------------------------------------------
@@ -388,7 +474,8 @@ def _pio_upload(source, target, env):
     full = str(_pio_option(env, "custom_tracker_full_flash", "")).strip().lower() in ("yes", "true", "1", "on")
     return send(upload, url, os.environ.get("PST_FLASH_TOKEN", ""),
                 _pio_option(env, "custom_tracker_on_recording", "ask") or "ask",
-                _pio_option(env, "custom_tracker_when_asleep", "") or "", full)
+                _pio_option(env, "custom_tracker_when_asleep", "") or "", full,
+                _pio_option(env, "custom_tracker_power", "") or "")
 
 
 def _in_platformio():

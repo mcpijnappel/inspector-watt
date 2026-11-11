@@ -1,14 +1,18 @@
-"""Flashing the DUT over its own USB port: the job flow, the same for every controller family.
+"""Flashing the board over its own USB port: the job flow, the same for every controller family.
 
 One job at a time:
 1. A recording is running: keep it (the flash becomes a 'flash' event, so its reboot counts as expected), stop it,
    flash after it stops (the job waits), or cancel. Asked in the UI or in the PlatformIO terminal unless the
    upload already says.
 2. The USB console lets go of the port.
-3. The port must be there. It vanishes while the DUT deep-sleeps: either wait for its next wake (power-cycling it
+3. The port must be there. It vanishes while the board deep-sleeps: either wait for its next wake (power-cycling it
    after wake_wait_s if it doesn't come), or power-cycle it right away with the PPK2.
-4. The family's backend writes the images (esp32: esptool, flash_esp.py), then the DUT boots the new firmware.
-If that fails (e.g. the DUT fell asleep just before it connected), the DUT is power-cycled and it's tried once more.
+4. The family's backend writes the images (esp32: esptool, flash_esp.py; rp2: picotool, flash_rp2.py), then the
+   board boots the new firmware.
+An upload with power "usb" is for a board on USB power, not on the PPK2: steps 1 and 3 don't apply (the recording
+isn't touched, nothing is power-cycled); the board just has to be plugged in. Each family has a default (esp32: ppk2,
+rp2: usb).
+If that fails (e.g. the board fell asleep just before it connected), the board is power-cycled and it's tried once more.
 A job still waiting (for an answer, the recording or a wake) can be cancelled, and a newer upload replaces it.
 """
 
@@ -37,6 +41,7 @@ CHOICES = ("keep", "stop", "after", "cancel")
 DONE = ("done", "failed", "cancelled")
 WAITING = ("queued", "waiting_choice", "waiting_recording", "waiting_wake")  # nothing written yet: cancel/replace is safe
 WAKE_MODES = ("wait", "always", "cycle")  # wait = power-cycle after wake_wait_s; always = never power-cycle
+POWERS = ("ppk2", "usb")  # what powers the board: the PPK2 (wake / power-cycle it) or its own USB (just plugged in)
 WAKE_WAIT_S = 90.0  # default: a bit longer than this firmware's 60 s deep sleep
 META_KEYS = ("project", "env", "version", "git", "host", "user", "source")
 
@@ -65,6 +70,7 @@ class FlashRequest:
     on_recording: str = "ask"  # ask | keep | stop | after | cancel
     when_asleep: str = ""  # wait | cycle; "" = the tracker's setting
     full_flash: bool = False  # write every image, also those already on the chip
+    power: str = ""  # ppk2 | usb; "" = the family's default
 
     def check(self) -> None:
         """What every family shares; the backend checks the rest (chip, options, offsets)."""
@@ -74,6 +80,8 @@ class FlashRequest:
             raise FlashError("on_recording must be ask, keep, stop, after or cancel")
         if self.when_asleep not in ("", *WAKE_MODES):
             raise FlashError("when_asleep must be wait, always or cycle")
+        if self.power not in ("", *POWERS):
+            raise FlashError("power must be ppk2 or usb")
         offsets = [im.offset for im in self.images if im.offset is not None]
         if len(set(offsets)) != len(offsets):
             raise FlashError("two images at the same offset")
@@ -85,10 +93,15 @@ class FlashRequest:
 
 
 class Backend(Protocol):
-    """Flashes one controller family. check() runs when the upload comes in, flash() once the port is there."""
+    """Flashes one controller family. check() runs when the upload comes in, flash() once the board is there
+    (present(): its USB port, or a boot loader of its own)."""
     family: str
+    default_power: str  # ppk2 | usb, when the upload doesn't say
+    missing: str  # power "usb" and the board isn't there: what to tell the user
 
     def check(self, req: FlashRequest) -> None: ...
+
+    def present(self) -> bool: ...
 
     def flash(self, job: FlashJob, port: str) -> bool: ...
 
@@ -155,6 +168,7 @@ class FlashJob:
             "start_idx": self.start_idx, "end_idx": self.end_idx, "wait_until": self.wait_until,
             "waiting_for": self.waiting_for, "when_asleep": self.req.when_asleep or None,
             "family": self.req.family, "chip": self.req.chip, "mac": self.mac, "full_flash": self.req.full_flash,
+            "power": self.req.power,
             "images": [{"offset": im.offset, "bytes": len(im.data),
                         "skipped": None if self.skipped is None else im.offset in self.skipped}
                        for im in self.req.images],
@@ -164,11 +178,12 @@ class FlashJob:
 
 class Flasher:
     def __init__(self, svc: CaptureService, usb: UsbManager, sessions=None, backends: list[Backend] | None = None):
-        from .flash_esp import EspBackend  # (it imports this module)
+        from .flash_esp import EspBackend  # (they import this module)
+        from .flash_rp2 import Rp2Backend
         self.svc = svc
         self.usb = usb
         self.sessions = sessions  # SessionManager or None (no database)
-        self.backends = {b.family: b for b in (backends or [EspBackend(usb)])}
+        self.backends = {b.family: b for b in (backends or [EspBackend(usb), Rp2Backend(usb)])}
         self.jobs: list[FlashJob] = []
         self._lock = threading.Lock()
         self.sim = usb.port.startswith("sim://")
@@ -194,6 +209,7 @@ class Flasher:
         backend = self.backends.get(req.family)
         if backend is None:
             raise FlashError(f"can't flash {req.family!r} (this tracker: {', '.join(self.backends)})")
+        req.power = req.power or backend.default_power
         req.check()
         backend.check(req)
         replaced = None
@@ -237,10 +253,10 @@ class Flasher:
         return job
 
     def power_cycle_now(self, job_id: int) -> FlashJob:
-        """Waiting for the DUT to wake: stop waiting and power-cycle it now."""
+        """Waiting for the board to wake: stop waiting and power-cycle it now."""
         job = self.get(job_id)
         if job.status != "waiting_wake":
-            raise FlashError("this upload isn't waiting for the DUT to wake")
+            raise FlashError("this upload isn't waiting for the board to wake")
         job._now.set()
         return job
 
@@ -264,7 +280,7 @@ class Flasher:
             try:
                 for attempt in (1, 2):
                     port = self._ensure_port(job, power_cycle=attempt == 2)
-                    if job.start_idx is None:  # no power-cycle: the flash starts when esptool resets the DUT
+                    if job.start_idx is None:  # no power-cycle: the flash starts when esptool resets the board
                         job.start_idx = ring.end
                     attempted = True
                     job.status = "flashing"
@@ -273,7 +289,8 @@ class Flasher:
                         ok = True
                         break
                     if attempt == 1:
-                        job.say("Flashing failed: power-cycling the DUT and trying once more")
+                        job.say("Flashing failed: " + ("power-cycling the board and trying once more"
+                                                       if job.req.power == "ppk2" else "trying once more"))
             finally:
                 self.usb.release()
                 if attempted:
@@ -297,6 +314,9 @@ class Flasher:
         sm = self.sessions
         active = sm.active if sm else None
         if not active:
+            return True
+        if job.req.power == "usb":
+            job.say(f"Recording '{active.name}' keeps running: this board is on USB power, not on the PPK2")
             return True
         choice = job.req.on_recording
         if choice == "ask":
@@ -336,28 +356,38 @@ class Flasher:
             job.session_id = active.id
         return True
 
+    def _present(self, job: FlashJob) -> bool:
+        return self.backends[job.req.family].present()
+
     def _ensure_port(self, job: FlashJob, power_cycle: bool = False) -> str:
-        """The port, there now. Missing (DUT asleep or off): wait for its next wake, or power-cycle it so it boots
-        and shows up."""
-        if self.usb.present() and not power_cycle:
+        """The port, there now. Missing (board asleep or off): wait for its next wake, or power-cycle it so it boots
+        and shows up. On USB power: it just has to be plugged in (a moment's grace for a board that's restarting)."""
+        if job.req.power == "usb":
+            deadline = time.monotonic() + PORT_WAIT_S / 2
+            while not self._present(job):
+                if time.monotonic() > deadline:
+                    raise FlashError(self.backends[job.req.family].missing)
+                time.sleep(0.1)
+            return self.usb.port
+        if self._present(job) and not power_cycle:
             return self.usb.port
         ppk2 = self.svc.ppk2
         mode = job.req.when_asleep or self.svc.flash_when_asleep
         forever = mode == "always"  # never power-cycle by itself, also not for the retry
         if forever and ppk2.dut_power is False:
-            raise FlashError("the DUT is off and this upload only waits for it to wake: switch the DUT on, "
+            raise FlashError("the board is off and this upload only waits for it to wake: switch the board on, "
                              "or let uploads power-cycle it (Settings → Firmware upload)")
         if (forever or (mode == "wait" and not power_cycle)) and ppk2.dut_power is not False:
             wait_s = self.svc.flash_wake_wait_s
             job.status = "waiting_wake"
             job.wait_until = None if forever else time.time() + wait_s
-            job.say("DUT asleep: waiting for its next wake (no power-cycle)" if forever
-                    else f"DUT asleep: waiting up to {wait_s:.0f} s for its next wake, then power-cycling it")
+            job.say("Board asleep: waiting for its next wake (no power-cycle)" if forever
+                    else f"Board asleep: waiting up to {wait_s:.0f} s for its next wake, then power-cycling it")
             deadline = float("inf") if forever else time.monotonic() + wait_s
             try:
                 while time.monotonic() < deadline:
-                    if self.usb.present():
-                        job.say("The DUT woke up")
+                    if self._present(job):
+                        job.say("The board woke up")
                         time.sleep(0.2)  # let udev finish (permissions) before esptool opens it
                         return self.usb.port
                     if job._cancel.is_set():
@@ -367,28 +397,28 @@ class Flasher:
                         break
                     time.sleep(0.05)
                 else:
-                    job.say(f"The DUT didn't wake within {wait_s:.0f} s: power-cycling it")
+                    job.say(f"The board didn't wake within {wait_s:.0f} s: power-cycling it")
             finally:
                 job.wait_until = None
         if not ppk2.voltage_set_by_us:
-            raise FlashError("the DUT's USB port isn't there and the PPK2 output isn't set by the tracker: switch the DUT on first")
+            raise FlashError("the board's USB port isn't there and the PPK2 output isn't set by the tracker: switch the board on first")
         job.status = "waking"
         if job.start_idx is None:  # the flash (and its mark) starts with this power-cycle, not with a wait before it
             job.start_idx = self.svc.ring.end
         if ppk2.dut_power:
-            job.say("DUT USB port not there (asleep?): power-cycling the DUT")
+            job.say("Board USB port not there (asleep?): power-cycling the board")
             ppk2.set_dut_power(False, by="flash")
             time.sleep(POWER_OFF_S)
         else:
-            job.say("DUT is off: switching it on")
+            job.say("Board is off: switching it on")
         ppk2.set_dut_power(True, by="flash")
         job.power_cycled = True
         if self.sim:
             self.usb.sim_factory.wake()
         deadline = time.monotonic() + PORT_WAIT_S
-        while not self.usb.present():
+        while not self._present(job):
             if time.monotonic() > deadline:
-                raise FlashError(f"the DUT's USB port ({self.usb.port}) didn't appear: is the USB adapter plugged in?")
+                raise FlashError(f"the board's USB port ({self.usb.port}) didn't appear: is the USB adapter plugged in?")
             time.sleep(0.05)
         time.sleep(0.2)  # let udev finish (permissions) before esptool opens it
         return self.usb.port

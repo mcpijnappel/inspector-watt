@@ -39,12 +39,16 @@ class VoltageIn(BaseModel):
 
 class OnOffIn(BaseModel):
     on: bool
-    by: str = Field("user", pattern="^(user|agent)$")  # who switched (DUT power): the web UI or an agent (MCP)
+    by: str = Field("user", pattern="^(user|agent)$")  # who switched (board power): the web UI or an agent (MCP)
 
 
 class SettingsIn(BaseModel):
     idle_power_off_s: int | None = Field(None, ge=0, le=86400)
     spike_filter: bool | None = None
+    auto_stream: bool | None = None
+    max_voltage_mv: int | None = Field(None, ge=800, le=5000)  # the tracker's limit (the api only lets the web UI set it)
+    min_free_gb: float | None = Field(None, ge=1, le=10000)
+    raw_mantissa_bits: int | None = Field(None, ge=8, le=23)
     flash_when_asleep: str | None = Field(None, pattern="^(wait|always|cycle)$")
     flash_wake_wait_s: float | None = Field(None, ge=5, le=3600)
 
@@ -68,7 +72,8 @@ class ImageIn(BaseModel):
 
 
 class FlashIn(BaseModel):
-    """One upload. family picks the backend; the esp32 settings stay top-level (as uploads have always sent them)."""
+    """One upload. family picks the backend (esp32, rp2); the esp32 settings stay top-level (as uploads have always
+    sent them)."""
     family: str = "esp32"
     images: list[ImageIn] = Field(min_length=1, max_length=16)
     chip: str = ""  # "": from the images
@@ -79,6 +84,7 @@ class FlashIn(BaseModel):
     on_recording: str = "ask"
     when_asleep: str = ""
     full_flash: bool = False
+    power: str = ""  # ppk2 | usb; "": the family's default (esp32: ppk2, rp2: usb)
     meta: dict = {}
 
     def request(self) -> FlashRequest:
@@ -89,7 +95,7 @@ class FlashIn(BaseModel):
         options = {"flash_mode": self.flash_mode, "flash_freq": self.flash_freq, "flash_size": self.flash_size,
                    "app_only": self.app_only} if self.family == "esp32" else {}
         return FlashRequest(images, self.chip, self.family, options, self.meta, self.on_recording,
-                            self.when_asleep, self.full_flash)
+                            self.when_asleep, self.full_flash, self.power)
 
 
 class ChoiceIn(BaseModel):
@@ -139,6 +145,7 @@ class DeviceIn(BaseModel):
     id: int | None = None
     name: str | None = None
     max_mv: int | None = Field(None, ge=800, le=5000)
+    uart_baud: int | None = Field(None, ge=300, le=12_000_000)  # its debug UART's speed
 
 
 class StopIn(BaseModel):
@@ -162,7 +169,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         sessions = SessionManager(svc, Store(cfg.database_url), data_dir, int(cfg.min_free_gb * 2**30),
                                   cfg.raw_mantissa_bits)
     flasher = Flasher(svc, svc.usb, sessions)
-    # Don't switch the DUT off under a recording or a flash.
+    # Don't switch the board off under a recording or a flash.
     svc.idle.busy = (lambda: sessions.active is not None or flasher.busy) if sessions else (lambda: flasher.busy)
 
     @asynccontextmanager
@@ -260,8 +267,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.put("/ppk2/device")
     def set_device(body: DeviceIn):
-        """The device on the bench and its voltage limit (max_mv null = no device: MAX_VOLTAGE_MV only)."""
-        svc.ppk2.set_device(body.model_dump() if body.max_mv else None)
+        """The device on the bench: its voltage limit (max_mv null = no device: the tracker's limit only) and its UART
+        speed."""
+        device_call(svc.set_device, body.model_dump() if body.max_mv else None)
         return svc.ppk2.status()
 
     @app.post("/ppk2/stream")
@@ -274,15 +282,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         svc.ppk2.set_spike_filter(body.on)
         return svc.ppk2.status()
 
+    def all_settings() -> dict:
+        return {**svc.settings(), **(sessions.settings() if sessions else {})}
+
     @app.get("/settings")
     def get_settings():
-        return svc.settings()
+        return all_settings()
 
     @app.put("/settings")
     def put_settings(body: SettingsIn):
         """Change settings while running (the api saves them; they're loaded again at startup)."""
-        svc.apply_settings(body.model_dump())
-        return svc.settings()
+        s = body.model_dump()
+        device_call(svc.apply_settings, s)
+        if sessions:
+            sessions.apply_settings(s)
+        return all_settings()
 
     @app.get("/battery/chemistries")
     def battery_chemistries():
@@ -305,7 +319,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             raise HTTPException(409, str(e)) from e
         return {"sent_bytes": n}
 
-    # the DUT's own USB: console (opened on demand) and flashing -----------------------------------------------
+    # the board's own USB: console (opened on demand) and flashing -----------------------------------------------
     def flash_brief() -> dict | None:
         """The running (or last) flash job without its log, for status polls."""
         j = flasher.latest()
@@ -347,7 +361,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     if svc.usb.sim_factory is not None:
         @app.post("/sim/usb")
         def sim_usb(body: OnOffIn):
-            """Simulator only: the DUT's USB port there (awake) or gone (asleep), for trying uploads to a sleeping DUT."""
+            """Simulator only: the board's USB port there (awake) or gone (asleep), for trying uploads to a sleeping board."""
             svc.usb.sim_factory.present = body.on
             return svc.usb.status()
 
@@ -382,7 +396,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/flash/{job_id}/cancel")
     def flash_cancel(job_id: int):
-        """Cancel an upload that's still waiting (for an answer, the recording, or the DUT to wake)."""
+        """Cancel an upload that's still waiting (for an answer, the recording, or the board to wake)."""
         try:
             return flasher.cancel(job_id).to_dict()
         except FlashError as e:
@@ -390,7 +404,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/flash/{job_id}/now")
     def flash_now(job_id: int):
-        """Waiting for the DUT to wake: power-cycle it now instead."""
+        """Waiting for the board to wake: power-cycle it now instead."""
         try:
             return flasher.power_cycle_now(job_id).to_dict()
         except FlashError as e:

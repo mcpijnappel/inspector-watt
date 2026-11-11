@@ -45,7 +45,7 @@ def test_time_sweep():
 def test_check():
     BatteryConfig().check(4200)
     with pytest.raises(ValueError):
-        BatteryConfig(mode="time", start_mv=4300).check(4200)  # above MAX_VOLTAGE_MV
+        BatteryConfig(mode="time", start_mv=4300).check(4200)  # above the voltage limit
     with pytest.raises(ValueError):
         BatteryConfig(floor_mv=3100, cutoff_mv=3000).check(4200)
 
@@ -94,7 +94,7 @@ def test_session_steps_voltage_and_stops(tmp_path, monkeypatch):
     mgr._battery_tick()
     assert len(ppk2.set) == 2 and ppk2.set[-1] < 3840 and len(rec.notes) == 1
     assert mgr.battery_status()["soc"] == pytest.approx(100 - 18.1 / 36 * 100)
-    rec.charge_c = 36.0  # empty: protect = DUT off + stop
+    rec.charge_c = 36.0  # empty: protect = board off + stop
     mgr._battery_tick()
     assert stops == [True] and rec.notes[-1][0] == "battery_end" and rec.notes[-1][1]["reason"] == "cutoff"
 

@@ -2,7 +2,7 @@
 
 Recovery rules:
 - PPK2 replugged during a session: the stream resumes on the same timeline (gap event), and with
-  auto_restore the session voltage + DUT power are set again (dut_restore event).
+  auto_restore the session voltage + board power are set again (dut_restore event).
 - Capture service restarted during a session: the session continues where the wall clock says it is
   (gap event for the downtime); same auto_restore behaviour.
 """
@@ -28,7 +28,7 @@ from .store import Store, StoreUnavailable
 log = logging.getLogger(__name__)
 
 TICK_S = 0.5
-# After a restart/stall: the DUT counts as still powered when it draws more than this on average.
+# After a restart/stall: the board counts as still powered when it draws more than this on average.
 # The PPK2 reads ~0.1-0.2 uA with the output off.
 DUT_ALIVE_A = 1e-6
 ALIVE_CHECK_SAMPLES = 50_000  # 0.5 s
@@ -77,6 +77,18 @@ class SessionManager:
         self._last_spool_check = 0.0
         self.spool_dir = data_dir / "spool"
         svc.ppk2.on_resume = self._on_ppk2_resume
+
+    def settings(self) -> dict:
+        return {"min_free_gb": round(self.min_free_bytes / 2**30, 2), "raw_mantissa_bits": self.mantissa_bits}
+
+    def apply_settings(self, s: dict) -> None:
+        """Free disk to keep (also for the running recording) and raw precision (from the next recording)."""
+        if s.get("min_free_gb") is not None:
+            self.min_free_bytes = int(float(s["min_free_gb"]) * 2**30)
+            if self.active:
+                self.active.rec.min_free_bytes = self.min_free_bytes
+        if s.get("raw_mantissa_bits") is not None:
+            self.mantissa_bits = int(s["raw_mantissa_bits"])
 
     # lifecycle -------------------------------------------------------------------------------------------
     def start(self) -> None:
@@ -256,8 +268,8 @@ class SessionManager:
         threading.Thread(target=self._handle_ppk2_resume, args=(gap_start, gap_samples, reason), daemon=True).start()
 
     def _dut_still_powered(self, rec: SessionRecorder) -> float | None:
-        """Mean current (A) if the PPK2 still supplies the session voltage and the DUT draws current, else None.
-        Then nothing needs to be restored, and re-sending the commands would only reboot the DUT."""
+        """Mean current (A) if the PPK2 still supplies the session voltage and the board draws current, else None.
+        Then nothing needs to be restored, and re-sending the commands would only reboot the board."""
         ppk2 = self.svc.ppk2
         mv = self._wanted_mv(rec)
         tolerance = BATTERY_KEEP_MV if rec.cfg.battery else 0
@@ -285,7 +297,7 @@ class SessionManager:
             mv = self.svc.ppk2.voltage_mv  # what the PPK2 really outputs (a battery session adjusts it next tick)
             self.svc.ppk2.adopt_source_state(mv, dut_power=True)
             rec.note("dut_kept", self.svc.ring.end, voltage_mv=mv, mean_a=mean)
-            log.info("session %d: DUT still powered (%.1f uA), not restoring", rec.session_id, mean * 1e6)
+            log.info("session %d: Board still powered (%.1f uA), not restoring", rec.session_id, mean * 1e6)
         else:
             self._power_up(rec, "dut_restore")
 
@@ -343,7 +355,7 @@ class SessionManager:
             self._stop_evt.wait(TICK_S)
 
     def _load_device(self) -> None:
-        """At startup: the device on the bench and its voltage limit, and saved settings (idle power-off, spike
+        """At startup: the device on the bench (voltage limit, UART speed), and saved settings (idle power-off, spike
         filter); the api sets them and keeps them in the database."""
         try:
             d = self.store.active_device()
@@ -351,12 +363,13 @@ class SessionManager:
         except Exception:  # database not there yet, or the api hasn't created the tables yet: next tick
             return
         if saved:
-            self.svc.apply_settings(saved)
+            self.svc.apply_settings(saved, startup=True)
+            self.apply_settings(saved)
             log.info("saved settings: %s", saved)
         self._device_loaded = True
         if d and self.svc.ppk2.device is None:  # the api may have pushed it already
-            self.svc.ppk2.set_device(dict(d))
-            log.info("device '%s' (limit %d mV)", d["name"], d["max_mv"])
+            self.svc.set_device(dict(d))
+            log.info("device '%s' (limit %d mV, UART %s baud)", d["name"], d["max_mv"], d.get("uart_baud"))
 
     def _try_recover(self) -> bool:
         """At startup: continue a session that was running when the service stopped."""
@@ -434,7 +447,7 @@ class SessionManager:
         if st.done:
             reason = "cutoff" if bat.on_cutoff == "protect" else "floor"
             a.rec.note("battery_end", idx, voltage_mv=st.voltage_mv, soc=st.soc, reason=reason)
-            log.info("session %d: emulated battery reached the %s (%d mV); DUT off", a.id, reason, st.voltage_mv)
+            log.info("session %d: emulated battery reached the %s (%d mV); board off", a.id, reason, st.voltage_mv)
             try:
                 self.stop_session(dut_off=True)
             except SessionError:

@@ -61,7 +61,7 @@ Screenshots: the built-in simulator.
 - A **Nordic Power Profiler Kit II** (PPK2), used as the power supply ("source mode") for the sensor.
 - A **USB-to-UART adapter** on the sensor's debug serial port (the udev rule expects a CH343; see
   [Install](#install) for another one).
-- The sensor (DUT, "device under test"). On this bench: a Seeed XIAO ESP32-C6 powered through its battery
+- The sensor board (the "device under test"). On this bench: a Seeed XIAO ESP32-C6 powered through its battery
   pins (see [Hardware notes](#hardware-notes)).
 - Optional: the sensor's **own USB port**, through an adapter that **blocks the 5 V** (data lines and ground
   only), for its USB console and [flashing firmware](#flashing-firmware). A third free USB port.
@@ -156,8 +156,8 @@ The sensor is switched off by itself when nothing records and no browser has the
 **Record** → pick a preset or set it up:
 
 - **Detail:** every sample is kept (Parquet files, 1 per minute). About 0.7 GB/hour while the sensor is
-  busy. Values are rounded to 12 significant bits (error ≤ 0.012 %); `RAW_MANTISSA_BITS=23` keeps them
-  lossless (about 1.1 GB/h).
+  busy. Values are rounded to 12 significant bits (error ≤ 0.012 %); 23 bits (Settings → Measurement & safety →
+  Raw precision) keeps them lossless (about 1.1 GB/h).
 - **Soak:** for long runs. 10 ms summaries for the whole run; full-rate data only around each wake-up
   (current above the wake threshold, plus a margin before and after), optionally a rolling full-rate
   buffer of the last hours.
@@ -229,7 +229,7 @@ instead of a fixed voltage.
 The gear icon in the top bar:
 
 - **Devices:** the board on the bench, with its default voltage, a **maximum voltage that the capture
-  service enforces** (never above `MAX_VOLTAGE_MV`), wake threshold, UART baud and phase rules. Sessions
+  service enforces** (never above the tracker's voltage limit), wake threshold, UART baud (the log runs at it while the board is on the bench) and phase rules. Sessions
   remember their device. Changing the device is refused while recording.
 - **Phase profiles:** rename, edit rules and cycle types, duplicate, delete; record presets.
 - **Measurement & safety:** idle power-off, spike filter (smooths the PPK2's range-switch spikes), battery
@@ -241,7 +241,7 @@ The gear icon in the top bar:
 ## Agents (MCP)
 
 The `mcp` service lets AI agents (Claude Code, other MCP clients) list and analyse sessions, search the
-serial log, summarise cycles, estimate battery life, look at the live measurement, read the DUT's USB console
+serial log, summarise cycles, estimate battery life, look at the live measurement, read the board's USB console
 and recent firmware uploads, and edit phase rules and cycle types. Hardware control is off unless you switch
 it on (below). It never flashes firmware and can't see the upload token.
 
@@ -277,8 +277,8 @@ them, add an ask rule such as `"ask": ["Bash(pio run *upload*)"]` to the firmwar
 ## Flashing firmware
 
 With the sensor's own USB port connected (5 V blocked, see [Requirements](#requirements)), a build on any
-machine on the network goes to the tracker, which flashes it with esptool (ESP32 chips for now). The PPK2
-keeps powering the sensor the whole time. Every way needs the **upload token**: Settings → Firmware upload
+machine on the network goes to the tracker, which flashes it with esptool (ESP32) or picotool (RP2040 /
+RP2350, [below](#rp2040--rp2350)). The PPK2 keeps powering an ESP32 sensor the whole time. Every way needs the **upload token**: Settings → Firmware upload
 shows it; put it in the environment variable `PST_FLASH_TOKEN` on the machine you upload from. Settings →
 Firmware upload also shows each setup below with this tracker's address filled in.
 
@@ -320,7 +320,7 @@ python pst_flash.py build/esp32.esp32.XIAO_ESP32C6/   # arduino-cli compile --ex
 python pst_flash.py firmware.merged.bin           # esptool merge-bin, espflash save-image --merge
 python pst_flash.py firmware.bin                  # an app image alone: placed like an OTA upload
 python pst_flash.py 0x0 boot.bin 0x8000 partitions.bin 0x10000 app.bin
-python pst_flash.py --help                        # --chip, --on-recording, --when-asleep, --full-flash, --dry-run
+python pst_flash.py --help                        # --chip, --on-recording, --when-asleep, --full-flash, --power, --dry-run
 ```
 The chip comes from the build or the image header. A merged image is split along its own partition table
 (bootloader, partition table, the partitions that hold data), so the erased gaps in it don't wipe the
@@ -333,7 +333,7 @@ What happens:
   (its sleep cycle stays as it is) and power-cycles it with the PPK2 if it hasn't woken after 90 s. Or it
   always waits (never power-cycles), or it power-cycles it right away. Set in Settings → Firmware upload, or
   per upload (`custom_tracker_when_asleep`, `--when-asleep`). While it waits, the banner can power-cycle it
-  now or cancel. Power-cycling needs the PPK2 voltage set by the tracker (switch the DUT on once).
+  now or cancel. Power-cycling needs the PPK2 voltage set by the tracker (switch the board on once).
 - **Recording running:** the upload asks (in the terminal, or answer in the web UI): keep recording and mark
   the flash as a `flash` event, stop the recording first, flash when the recording stops, or cancel.
   `custom_tracker_on_recording` / `--on-recording` can answer up front. "After" queues it: the upload command
@@ -364,6 +364,33 @@ including the power-cycle; the same build again ~3 s (nothing written); reading 
 backup) takes ~20 s; over OTA the same 1.8 MB app arrives in ~1 s on the LAN. Writing only changed sectors (esptool `--diff-with`) was tried and dropped: even a
 one-constant code change shifts almost the whole app (401 of ~444 sectors), so it saved nothing worth its
 cost.
+
+### RP2040 / RP2350
+
+A Raspberry Pi Pico, XIAO RP2040 or any RP2040 / RP2350 board flashes over its own USB with picotool (in the
+capture image). Its firmware needs USB serial (pico-sdk `stdio_usb`, arduino-pico `Serial`): the tracker
+opens that port at 1200 baud, which restarts the board into its USB boot loader (BOOTSEL mode); picotool
+then writes the UF2 (`--update`: sectors that already hold the same data aren't written), checks it and
+starts it. A board already in BOOTSEL mode (blank, or BOOTSEL held while plugging it in) is flashed straight
+away; firmware without USB serial needs that too.
+
+By default such a board is on **USB power** (a plain cable, not on the PPK2): the upload doesn't touch the
+PPK2, isn't asked about a running recording and doesn't mark it. Soldered to the PPK2 with the 5 V blocked
+like an ESP32 sensor, set `custom_tracker_power = ppk2` / `--power ppk2` and it's woken and power-cycled like
+one. Not measured on hardware yet.
+```ini
+[env:xiao_rp2040_tracker]
+extends = env:seeed_xiao_rp2040   ; arduino-pico (platform raspberrypi); a Pico: env:pico
+upload_protocol = custom
+extra_scripts = post:pst_flash.py
+custom_tracker_url = http://<tracker>:8080
+```
+```sh
+python pst_flash.py build/blink.uf2                                # pico-sdk, or any .uf2
+python pst_flash.py build/rp2040.rp2040.seeed_xiao_rp2040/         # arduino-cli compile --export-binaries
+```
+The udev rule gives RP boards `/dev/dut-usb` and lets the capture service reach them in BOOTSEL mode
+(`/dev/bus/usb`, mounted into the container): install it again after updating.
 
 ## Operations
 
@@ -411,8 +438,8 @@ rsync -a data/ /path/to/backup/data/                                       # ful
 | PPK2 or UART "not connected" | `ls -l /dev/ppk2 /dev/dut-uart`. Missing: replug, check the udev rule (and the adapter's ids). After a replug the stream resumes by itself. |
 | "Permission denied" on the port | Headless machine: use `OWNER=` in the udev rule (see Install). User id not 1000: set `UID`/`GID` in `.env`. |
 | Lost samples or gaps | Settings → System health. Plug the PPK2 straight into the computer (no hub, short cable) and keep heavy work off that machine. |
-| DUT power shows "unknown" | Normal after the capture service restarted: it's known again after the next switch. The sensor keeps running. |
-| Detail recording stops writing files | The disk reached `MIN_FREE_GB` free space. Free space or delete old sessions. |
+| Board power shows "unknown" | Normal after the capture service restarted: it's known again after the next switch. The sensor keeps running. |
+| Detail recording stops writing files | The disk reached the free space to keep (Settings → Storage). Free space or delete old sessions. |
 | Containers restart for no reason (Bazzite) | Run compose through `./dc`, not `docker compose` from `/home/...`. |
 | Upload says "flash token missing or wrong" | `PST_FLASH_TOKEN` must be the token from `/api/flash/settings`. |
 | OTA upload stops at "Waiting for device..." | The tracker couldn't connect back to the uploading machine: allow incoming TCP from the tracker there (the port espota picks is random; `upload_flags = --host_port=...` fixes it). |
@@ -459,18 +486,15 @@ The PPK2 sample index × 10 µs is the master clock; UART lines are mapped onto 
 
 ### Settings in `.env`
 
-Defaults are in `compose.yaml`; see `.env.example`.
+Defaults are in `compose.yaml`; see `.env.example`. The rest is set in the web UI: the voltage limit (4.2 V
+at first; changing it needs a confirmation, and agents can't), idle power-off, measuring when the PPK2
+connects and raw precision in Settings → Measurement & safety, the free disk to keep in Settings → Storage,
+each board's UART speed in Settings → Devices.
 
 | Setting | Default | What |
 |---|---|---|
 | `PPK2_PORT`, `UART_PORT`, `USB_PORT` | `/host-dev/ppk2`, `/host-dev/dut-uart`, `/host-dev/dut-usb` | device paths (`sim://` = simulator) |
-| `UART_BAUD` | 115200 | baud at start (a device can set its own) |
-| `MAX_VOLTAGE_MV` | 4200 | hard limit for the PPK2 output |
-| `IDLE_POWER_OFF_S` | 600 | default until changed in Settings → Measurement & safety (0 = never) |
-| `AUTO_STREAM` | 1 | start measuring as soon as the PPK2 connects |
 | `RING_SECONDS` | 300 | live buffer, about 0.5 MB RAM per second |
-| `RAW_MANTISSA_BITS` | 12 | full-rate file precision; 23 = lossless |
-| `MIN_FREE_GB` | 10 | stop writing full-rate files below this much free disk |
 | `DATA_DIR` | `./data` | full-rate files |
 | `WEB_PORT`, `WEB_BIND` | 8080, 127.0.0.1 | web UI; `0.0.0.0` = the whole network |
 | `OTA_PORT`, `OTA_BIND` | 3232, as `WEB_BIND` | Arduino OTA endpoint (UDP) for PlatformIO's `espota` uploads |
@@ -549,7 +573,7 @@ Battery emulation in the start request: `"battery": {"chemistry": "lipo", "cells
 ### Hardware notes
 
 - The PPK2 (source mode) powers a **Seeed XIAO ESP32-C6 through its battery pins**: it stands in for a
-  1-cell LiPo, so `MAX_VOLTAGE_MV` defaults to 4200. Don't plug USB into the XIAO while measuring, unless
+  1-cell LiPo, so the voltage limit starts at 4.2 V. Don't plug USB into the XIAO while measuring, unless
   it's through an adapter that blocks the 5 V.
 - The XIAO's USB (USB-Serial/JTAG, 303a:1001) shows up about 1 s after power-on and disappears in deep
   sleep. The console opens it with DTR and RTS as the kernel sets them (both on): clearing them one after

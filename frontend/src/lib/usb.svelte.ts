@@ -1,4 +1,4 @@
-// The DUT's own USB console: its lines (polled only while the console is on screen), open/close, send, menu keys.
+// The board's own USB console: its lines (polled only while the console is on screen), open/close, send, menu keys.
 // Status (present, open, menu) comes with the live status poll.
 
 import { api, type UartLine } from './api';
@@ -98,11 +98,11 @@ class UsbConsole {
 
   async open() {
     if (await this.run(() => api.usbOpen(true)))
-      this.note(this.status?.present ? 'Console open.' : 'Console open. Waiting for the DUT to wake up (it shows up on its next wake).');
+      this.note(this.status?.present ? 'Console open.' : 'Console open. Waiting for the board to wake up (it shows up on its next wake).');
   }
 
   async close() {
-    if (await this.run(() => api.usbOpen(false))) this.note('Console closed. The DUT sleeps again within ~30 s.');
+    if (await this.run(() => api.usbOpen(false))) this.note('Console closed. The board sleeps again within ~30 s.');
   }
 
   async send(text: string) {

@@ -148,7 +148,7 @@ _reset_cache: dict[tuple[int, int], list[dict]] = {}
 
 
 async def session_resets(s: dict, n_lines: int | None = None) -> list[dict]:
-    """Unexpected DUT resets in a session (see resets.py). Cached until the session has more log lines."""
+    """Unexpected board resets in a session (see resets.py). Cached until the session has more log lines."""
     if n_lines is None:
         n_lines = (await q_one("SELECT count(*) AS n FROM uart_lines WHERE session_id = %s", (s["id"],)))["n"]
     key = (s["id"], n_lines)
@@ -428,7 +428,7 @@ class ProfileIn(BaseModel):
     name: str | None = None
     rules: list[RuleIn] | None = None
     types: list[TypeIn] | None = None
-    # Regex for the log line that says what woke the DUT; its first group is the reason. "" = the default.
+    # Regex for the log line that says what woke the board; its first group is the reason. "" = the default.
     wake_pattern: str | None = Field(None, max_length=300)
 
 
@@ -732,7 +732,7 @@ class DeviceIn(BaseModel):
     voltage_mv: int = Field(3700, ge=800, le=5000)
     max_mv: int = Field(4200, ge=800, le=5000)
     wake_threshold_ua: float = Field(5000, gt=0)
-    uart_baud: int | None = Field(None, gt=0)
+    uart_baud: int = Field(115200, ge=300, le=12_000_000)  # its debug UART's speed; set when it goes on the bench
     profile_id: int | None = None
 
 
@@ -753,8 +753,8 @@ async def active_device() -> dict | None:
 
 
 async def push_device(dev: dict | None) -> dict:
-    """Tell capture which device is on the bench, so it enforces its voltage limit."""
-    body = {"id": dev["id"], "name": dev["name"], "max_mv": dev["max_mv"]} if dev else {}
+    """Tell capture which device is on the bench, so it enforces its voltage limit and runs the UART at its speed."""
+    body = {"id": dev["id"], "name": dev["name"], "max_mv": dev["max_mv"], "uart_baud": dev["uart_baud"]} if dev else {}
     try:
         r = await capture.put("/ppk2/device", json=body)
     except httpx.HTTPError as e:
@@ -802,7 +802,7 @@ async def update_device(did: int, body: DeviceIn):
         raise HTTPException(404, "device not found")
     active = await active_device()
     if active and active["id"] == did:
-        await push_device(r)  # a new limit applies right away
+        await push_device(r)  # a new limit and UART speed apply right away
     return r
 
 
@@ -878,13 +878,17 @@ async def get_setting_value(key: str):
 class MeasurementIn(BaseModel):
     idle_power_off_s: int | None = Field(None, ge=0, le=86400)
     spike_filter: bool | None = None
+    auto_stream: bool | None = None  # start measuring when the PPK2 connects
+    min_free_gb: float | None = Field(None, ge=1, le=10000)  # stop writing raw data below this much free disk
+    raw_mantissa_bits: int | None = Field(None, ge=8, le=23)  # raw precision of new recordings; 23 = lossless
     flash_when_asleep: str | None = Field(None, pattern="^(wait|always|cycle)$")
     flash_wake_wait_s: float | None = Field(None, ge=5, le=3600)
 
 
 @app.get("/api/measurement")
 async def get_measurement():
-    """Capture settings: idle power-off and spike filter (changeable), and the ones fixed in .env."""
+    """Capture settings (changeable here, the voltage limit only through PUT /api/measurement/max-voltage), and the
+    ones fixed in .env."""
     s = await capture_get("/settings")
     if s is None:
         raise HTTPException(502, "capture service unreachable")
@@ -894,7 +898,24 @@ async def get_measurement():
 @app.put("/api/measurement")
 async def put_measurement(body: MeasurementIn):
     """Apply in capture now, and keep them (capture loads them again when it starts)."""
-    change = body.model_dump(exclude_none=True)
+    return await apply_capture_settings(body.model_dump(exclude_none=True))
+
+
+class MaxVoltageIn(BaseModel):
+    max_voltage_mv: int = Field(ge=800, le=5000)  # the PPK2 goes to 5 V
+
+
+@app.put("/api/measurement/max-voltage")
+async def put_max_voltage(body: MaxVoltageIn, request: Request):
+    """The tracker's voltage limit: nothing goes above it, whatever a device says. Set in the web UI (which asks
+    for a confirmation first), never by an agent: the MCP server's requests are refused here, also if its own
+    allow list ever let this through. A board powered above a lower limit is switched off."""
+    if request.headers.get("x-pst-client") == "mcp":
+        raise HTTPException(403, "the voltage limit is changed in the web UI only, not by agents")
+    return await apply_capture_settings({"max_voltage_mv": body.max_voltage_mv})
+
+
+async def apply_capture_settings(change: dict) -> dict:
     try:
         r = await capture.put("/settings", json=change)
     except httpx.HTTPError as e:
@@ -922,7 +943,7 @@ async def storage():
         "disk": {"total_bytes": du.total, "free_bytes": du.free, "used_bytes": du.used},
         "database_bytes": db["bytes"] if db else None,
         "raw_bytes": sum(r["raw_bytes"] for r in rows),
-        "min_free_gb": (cap or {}).get("fixed", {}).get("min_free_gb"),
+        "min_free_gb": (cap or {}).get("min_free_gb"),
         "sessions": rows,
     }
 
@@ -1262,7 +1283,7 @@ async def flash_cancel(job_id: int, request: Request):
 
 @app.post("/api/flash/{job_id:int}/now")
 async def flash_now(job_id: int, request: Request):
-    """Waiting for the DUT to wake: power-cycle it now (from the UI)."""
+    """Waiting for the board to wake: power-cycle it now (from the UI)."""
     return await forward(request, f"/flash/{job_id}/now")
 
 

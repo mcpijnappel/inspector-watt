@@ -127,7 +127,7 @@ def test_flash_asleep_without_tracker_power_fails(client):
     client.app.state.svc.usb.sim_factory.present = False
     j = client.post("/flash", json=body(when_asleep="cycle")).json()
     wait_for(lambda: client.get(f"/flash/{j['id']}").json()["status"] == "failed")
-    assert "switch the DUT on" in client.get(f"/flash/{j['id']}").json()["error"]
+    assert "switch the board on" in client.get(f"/flash/{j['id']}").json()["error"]
 
 
 def test_one_flash_at_a_time_and_bad_requests(client):

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Top-bar chip for the DUT's own USB port: asleep / closed / console open / menu waiting / upload waiting /
+  // Top-bar chip for the board's own USB port: asleep / closed / console open / menu waiting / upload waiting /
   // flashing, with a small menu to open or close the console.
   import { fmtClock } from '../lib/format';
   import { live } from '../lib/live.svelte';
@@ -18,7 +18,7 @@
 
   const label = $derived.by(() => {
     if (!u) return '';
-    if (flashing) return f!.status === 'flashing' ? `flashing ${Math.round(f!.progress)} %` : f!.status === 'waking' ? 'waking the DUT' : 'flashing';
+    if (flashing) return f!.status === 'flashing' ? `flashing ${Math.round(f!.progress)} %` : f!.status === 'waking' ? 'waking the board' : 'flashing';
     if (asking) return 'upload waiting';
     if (f?.status === 'waiting_recording') return 'upload queued';
     if (f?.status === 'waiting_wake') return 'upload · waiting for wake';
@@ -41,18 +41,18 @@
 {#if u}
   <div class="anchor">
     <button class="chip" class:warn={tone === 'warn'} class:flash={tone === 'flash'} type="button" aria-expanded={open} onclick={() => (open = !open)}
-      title="The DUT's own USB port (console and flashing)">
+      title="The board's own USB port (console and flashing)">
       <span class="dot" class:warn={tone === 'warn'} class:flash={tone === 'flash'} class:pulse></span>USB · {label}
       {#if flashing && f?.status === 'flashing'}<span class="mini" aria-hidden="true"><i style:width="{f.progress}%"></i></span>{/if}
     </button>
     {#if open}
-      <div class="popover menu" role="dialog" aria-label="DUT USB" use:place use:outside={() => (open = false)}>
-        <div class="hd"><span class="dot" class:warn={u.wanted}></span>DUT USB · {u.wanted ? 'console open' : 'closed'}</div>
+      <div class="popover menu" role="dialog" aria-label="Board USB" use:place use:outside={() => (open = false)}>
+        <div class="hd"><span class="dot" class:warn={u.wanted}></span>Board USB · {u.wanted ? 'console open' : 'closed'}</div>
         <p class="sub">
           {#if u.wanted}
-            The DUT sees USB and won't deep-sleep while the console is open.
+            The board sees USB and won't deep-sleep while the console is open.
           {:else}
-            Closed: the DUT sees no USB and deep-sleeps as usual. The port disappears while it sleeps and comes back on each wake.
+            Closed: the board sees no USB and deep-sleeps as usual. The port disappears while it sleeps and comes back on each wake.
           {/if}
         </p>
         {#if usb.error}<p class="error">{usb.error}</p>{/if}

@@ -131,7 +131,8 @@ def test_only_safe_writes():
                  ("POST", "/api/device/usb/open"), ("POST", "/api/device/usb/key"),
                  ("POST", "/api/agents/requests/1/answer"), ("POST", "/api/agents/revoke"), ("PUT", "/api/mcp"),
                  ("POST", "/api/flash/token"), ("POST", "/api/mcp/tokens"), ("DELETE", "/api/mcp/tokens/1"),
-                 ("POST", "/api/mcp/tokens/1/renew")]:
+                 ("POST", "/api/mcp/tokens/1/renew"), ("PUT", "/api/measurement"),
+                 ("PUT", "/api/measurement/max-voltage")]:
         assert not allowed(m, p), (m, p)
     for m, p in [("PUT", "/api/profiles/1"), ("POST", "/api/profiles"), ("POST", "/api/sessions/3/phases/test"),
                  ("POST", "/api/sessions/3/types/test"), ("PATCH", "/api/sessions/3"), ("GET", "/api/flash/jobs"),
@@ -140,6 +141,14 @@ def test_only_safe_writes():
         assert allowed(m, p), (m, p)
     with pytest.raises(ApiError, match="not allowed"):
         run(Api(base_url="http://api").request("POST", "/api/device/ppk2/dut", json={"on": True}))
+
+
+def test_says_it_is_the_mcp_server():
+    """The api refuses the voltage limit to requests marked like this, whatever the allow list says."""
+    seen = []
+    a = Api(base_url="http://api", transport=httpx.MockTransport(lambda r: seen.append(r) or httpx.Response(200, json=[])))
+    run(a.request("GET", "/api/sessions"))
+    assert seen[0].headers["x-pst-client"] == "mcp"
 
 
 READ_TOOLS = {"list_sessions", "get_session", "range_stats", "current_over_time", "search_log", "list_events",

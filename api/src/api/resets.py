@@ -1,7 +1,7 @@
-"""Unexpected resets of the DUT, from its serial log.
+"""Unexpected resets of the board, from its serial log.
 
 The ESP32 ROM prints "rst:0x5 (SLEEP_WAKEUP),boot:0x7e (...)" on every reset. Deep-sleep wakes are normal, and so is
-a power-on right after the tracker switched the DUT on, and any reset during or just after a firmware flash by the
+a power-on right after the tracker switched the board on, and any reset during or just after a firmware flash by the
 tracker (a 'flash' event); everything else is flagged: brownout, watchdog, software
 reset (a crash when panic text comes just before it), or a power-on the tracker didn't cause (the supply dropped).
 Each reset gets the last log line before it (since the previous reset) as its explanation: firmware logs a
@@ -16,8 +16,8 @@ import re
 
 RST = re.compile(r"rst:(0x[0-9a-fA-F]+)\s*\(([^)]*)\)")
 PANIC = re.compile(r"Guru Meditation|abort\(\) was called|Backtrace:|panic", re.IGNORECASE)
-POWER_ON_GRACE_S = 2.0  # a power-on this soon after the tracker switched the DUT on is the tracker's own
-FLASH_GRACE_S = 5.0  # after a flash ends: the DUT boots the new firmware
+POWER_ON_GRACE_S = 2.0  # a power-on this soon after the tracker switched the board on is the tracker's own
+FLASH_GRACE_S = 5.0  # after a flash ends: the board boots the new firmware
 LOOK_BACK_S = 10.0  # explanation and panic text: this far before the reset
 
 LABELS = {"brownout": "brownout", "watchdog": "watchdog", "software": "software reset", "crash": "crash",
@@ -49,7 +49,7 @@ def classify(text: str) -> tuple[str, str, str] | None:
 
 def find_resets(lines: list[tuple[float, str]], tracker_on: list[float],
                 flashes: list[tuple[float, float]] = ()) -> list[dict]:
-    """lines: (session seconds, text) sorted by time; tracker_on: times the tracker switched the DUT on;
+    """lines: (session seconds, text) sorted by time; tracker_on: times the tracker switched the board on;
     flashes: (start, end) of firmware flashes by the tracker.
     Returns the unexpected resets in time order: {t, kind, label, code, chip, explanation, panic}."""
     on = sorted(tracker_on)

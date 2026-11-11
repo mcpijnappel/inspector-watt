@@ -12,7 +12,7 @@ import serial
 
 from .clocksync import ClockSync
 from .config import Config
-from .ppk2 import SAMPLE_RATE_HZ, VDD_MIN_MV, Calibration, Decoder, PowerMode, PPK2Link
+from .ppk2 import SAMPLE_RATE_HZ, VDD_MAX_MV, VDD_MIN_MV, Calibration, Decoder, PowerMode, PPK2Link
 from .ringbuffer import RingBuffer
 from .sim import SimPPK2Serial, SimUartSerial, SimUsbDevice
 from .uart import LineLog, LineSplitter, decode_line
@@ -21,6 +21,7 @@ from .usb import UsbManager
 log = logging.getLogger(__name__)
 
 READ_SIZE = 65536
+DEFAULT_UART_BAUD = 115200  # the UART's speed until the board on the bench sets its own
 READ_TIMEOUT_S = 0.05
 RETRY_S = 1.0
 STALL_S = 2.0  # streaming but no data for this long: the PPK2 hung; reconnect
@@ -34,7 +35,7 @@ def keep_dtr_on_close(ser) -> None:
     """Don't drop DTR when the port closes (clear HUPCL).
 
     Measured on the bench: when DTR drops after the port has been open for a while (e.g. this service
-    restarting), the PPK2 sometimes switches its output off, so the DUT loses power and cold-boots.
+    restarting), the PPK2 sometimes switches its output off, so the board loses power and cold-boots.
     With DTR kept high the output stayed on in every trial. The setting sticks to the tty, so it also
     covers the close that happens when the process exits.
     """
@@ -102,6 +103,8 @@ class PPK2Manager:
         self.calibration: Calibration | None = None
         self.connected = False
         self.streaming = False
+        self.auto_stream = cfg.auto_stream  # start measuring when the PPK2 connects (a setting)
+        self.hard_max_mv = cfg.max_voltage_mv  # the tracker's voltage limit (a setting; never above VDD_MAX_MV)
         self._want_stream = cfg.auto_stream  # measure whenever connected; resumed automatically after a replug
         self.on_resume = None  # callback(gap_start_idx, gap_samples, reason) after the stream resumed
         self._last_data = 0.0
@@ -112,7 +115,7 @@ class PPK2Manager:
         self.voltage_mv: int | None = None
         self.voltage_set_by_us = False
         self.dut_power: bool | None = None  # unknown until we set it
-        self.dut_changed: dict | None = None  # last DUT power change: {"on", "by": user|session|idle|limit, "at": unix time}
+        self.dut_changed: dict | None = None  # last board power change: {"on", "by": user|session|idle|limit, "at": unix time}
         self.device: dict | None = None  # the device on the bench: {"id", "name", "max_mv"} (its voltage limit)
 
     # lifecycle -------------------------------------------------------------------------------------------
@@ -272,20 +275,30 @@ class PPK2Manager:
 
     @property
     def max_mv(self) -> int:
-        """Highest voltage allowed now: the device's limit, never above MAX_VOLTAGE_MV."""
+        """Highest voltage allowed now: the device's limit, never above the tracker's limit."""
         dev = (self.device or {}).get("max_mv")
-        return min(self.cfg.max_voltage_mv, dev) if dev else self.cfg.max_voltage_mv
+        return min(self.hard_max_mv, dev) if dev else self.hard_max_mv
 
     def _check_mv(self, mv: int) -> None:
         if not VDD_MIN_MV <= mv <= self.max_mv:
-            who = f"the limit of {self.device['name']}" if self.device and self.max_mv < self.cfg.max_voltage_mv else "MAX_VOLTAGE_MV"
+            who = f"the limit of {self.device['name']}" if self.device and self.max_mv < self.hard_max_mv else "the tracker's limit"
             raise DeviceError(f"voltage must be {VDD_MIN_MV}-{self.max_mv} mV ({who})")
 
     def set_device(self, device: dict | None) -> None:
-        """A device (and so a voltage limit) was picked. If the DUT is powered above the new limit, it goes off."""
+        """A device (and so a voltage limit) was picked. If the board is powered above the new limit, it goes off."""
         self.device = device
+        self._enforce_limit()
+
+    def set_hard_max(self, mv: int) -> None:
+        """The tracker's own voltage limit changed (Settings). If the board is powered above it, it goes off."""
+        if not VDD_MIN_MV <= mv <= VDD_MAX_MV:
+            raise DeviceError(f"the limit must be {VDD_MIN_MV}-{VDD_MAX_MV} mV")
+        self.hard_max_mv = int(mv)
+        self._enforce_limit()
+
+    def _enforce_limit(self) -> None:
         if self.dut_power and self.voltage_mv is not None and self.voltage_mv > self.max_mv:
-            log.warning("DUT at %d mV is above the new limit (%d mV): switching it off", self.voltage_mv, self.max_mv)
+            log.warning("Board at %d mV is above the new limit (%d mV): switching it off", self.voltage_mv, self.max_mv)
             try:
                 self.set_dut_power(False, by="limit")
             except DeviceError:
@@ -328,7 +341,7 @@ class PPK2Manager:
         with self._cmd_lock:
             link = self._require_link()
             if on and not self.voltage_set_by_us:
-                raise DeviceError("set the source voltage first, so the DUT never powers up at an unexpected voltage")
+                raise DeviceError("set the source voltage first, so the board never powers up at an unexpected voltage")
             link.set_dut_power(on)
             self.dut_power = on
             self.dut_changed = {"on": on, "by": by, "at": time.time()}
@@ -350,8 +363,8 @@ class PPK2Manager:
             "dut_power": self.dut_power,
             "dut_changed": self.dut_changed,
             "spike_filter": self.decoder.spike_filter,
-            "max_voltage_mv": self.max_mv,  # effective: the device's limit, capped by MAX_VOLTAGE_MV
-            "hard_max_mv": self.cfg.max_voltage_mv,
+            "max_voltage_mv": self.max_mv,  # effective: the device's limit, capped by the tracker's limit
+            "hard_max_mv": self.hard_max_mv,
             "device": self.device,
             "stream": {
                 **s.to_dict(),
@@ -371,7 +384,7 @@ class UartManager:
         self.clock = clock
         self.ppk2 = ppk2
         self.port = cfg.uart_port
-        self.baud = cfg.uart_baud
+        self.baud = DEFAULT_UART_BAUD  # until the board on the bench says (CaptureService.set_device)
         self.log = LineLog()
         self.connected = False
         self.error: str | None = None
@@ -479,32 +492,49 @@ class CaptureService:
         self.usb = UsbManager(cfg.usb_port, SimUsbDevice() if cfg.usb_port.startswith("sim://") else None)
 
         self.idle = IdlePowerOff(self.ppk2, cfg.idle_power_off_s)
-        # Firmware uploads to a sleeping DUT: wait for its next wake (power-cycle after wake_wait_s), always wait
+        # Firmware uploads to a sleeping board: wait for its next wake (power-cycle after wake_wait_s), always wait
         # (never power-cycle), or power-cycle right away.
         self.flash_when_asleep = "wait"
         self.flash_wake_wait_s = 90.0
 
+    def set_device(self, device: dict | None) -> None:
+        """The board on the bench: its voltage limit (PPK2) and the speed its debug UART runs at."""
+        self.ppk2.set_device({k: device[k] for k in ("id", "name", "max_mv")} if device and device.get("max_mv") else None)
+        if device and device.get("uart_baud") and device["uart_baud"] != self.uart.baud:
+            self.uart.set_baud(int(device["uart_baud"]))
+            log.info("UART at %d baud for '%s'", self.uart.baud, device.get("name"))
+
     def settings(self) -> dict:
-        """Settings: the ones that can change while running, then the ones from the environment (.env)."""
+        """Settings: the ones that can change while running, then the ones from the environment (.env).
+        (min_free_gb and raw_mantissa_bits: the session manager's, see SessionManager.settings.)"""
         return {
             "idle_power_off_s": self.idle.after_s,
             "spike_filter": self.ppk2.decoder.spike_filter,
             "flash_when_asleep": self.flash_when_asleep,
             "flash_wake_wait_s": self.flash_wake_wait_s,
+            "auto_stream": self.ppk2.auto_stream,
+            "max_voltage_mv": self.ppk2.hard_max_mv,
+            "min_free_gb": self.cfg.min_free_gb,
+            "raw_mantissa_bits": self.cfg.raw_mantissa_bits,
             "fixed": {
-                "max_voltage_mv": self.cfg.max_voltage_mv,
-                "min_free_gb": self.cfg.min_free_gb,
                 "ring_seconds": self.cfg.ring_seconds,
-                "raw_mantissa_bits": self.cfg.raw_mantissa_bits,
-                "auto_stream": self.cfg.auto_stream,
-                "uart_baud": self.cfg.uart_baud,
                 "ppk2_port": self.cfg.ppk2_port,
                 "uart_port": self.cfg.uart_port,
                 "usb_port": self.cfg.usb_port,
             },
         }
 
-    def apply_settings(self, s: dict) -> None:
+    def apply_settings(self, s: dict, startup: bool = False) -> None:
+        """Settings from the api: changed in the UI now, or the saved ones when capture starts (startup)."""
+        if s.get("max_voltage_mv") is not None:
+            self.ppk2.set_hard_max(int(s["max_voltage_mv"]))
+        if s.get("auto_stream") is not None:
+            self.ppk2.auto_stream = bool(s["auto_stream"])
+            if startup and not self.ppk2.auto_stream and self.ppk2.streaming:
+                try:  # it may have started before the saved settings were read
+                    self.ppk2.stop_stream()
+                except DeviceError:
+                    pass
         if s.get("idle_power_off_s") is not None:
             self.idle.after_s = int(s["idle_power_off_s"])
             self.idle.viewer_seen()  # count from now, not from before the change
@@ -529,8 +559,8 @@ class CaptureService:
 
 
 class IdlePowerOff:
-    """Switches the DUT off when nothing records and no browser has looked for `after_s` seconds, so a forgotten
-    DUT doesn't keep running and opening the app never finds it powered without a deliberate action."""
+    """Switches the board off when nothing records and no browser has looked for `after_s` seconds, so a forgotten
+    board doesn't keep running and opening the app never finds it powered without a deliberate action."""
 
     CHECK_S = 10.0
 
@@ -546,7 +576,7 @@ class IdlePowerOff:
         self._last_viewer = time.monotonic()
 
     def remaining_s(self) -> float | None:
-        """Seconds until the DUT is switched off, or None if it won't be (disabled, off already, recording)."""
+        """Seconds until the board is switched off, or None if it won't be (disabled, off already, recording)."""
         if self.after_s <= 0 or self.ppk2.dut_power is False or not self.ppk2.connected or self.busy():
             return None
         return max(0.0, self.after_s - (time.monotonic() - self._last_viewer))
@@ -563,7 +593,7 @@ class IdlePowerOff:
                 continue
             try:
                 self.ppk2.set_dut_power(False, by="idle")
-                log.info("DUT switched off: nothing recording and no viewer for %d s", self.after_s)
+                log.info("Board switched off: nothing recording and no viewer for %d s", self.after_s)
             except DeviceError as e:
                 log.warning("idle power-off failed: %s", e)
 

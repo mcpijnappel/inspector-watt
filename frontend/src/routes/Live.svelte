@@ -30,7 +30,7 @@
   const session = $derived(st?.session?.active ? st.session.session : undefined);
   const presetWindow = $derived(WINDOWS.some(([s]) => s === live.windowS));
 
-  // Unexpected DUT resets in the recording, from the api (re-read every 15 s while recording).
+  // Unexpected board resets in the recording, from the api (re-read every 15 s while recording).
   let resets = $state<{ count: number; groups: ResetGroup[] } | null>(null);
   const sessionId = $derived(session?.id ?? null);
   $effect(() => {
@@ -137,7 +137,7 @@
       <div class="value">{session ? fmtDuration(session.duration_s) : 'not recording'}</div>
       <div class="sub">{session ? `${session.kind} · average ${fmtAmps(sessionAvg)}` : 'Record, or Save… afterwards'}</div>
       {#if session && resets?.count}
-        <a class="sub bad" href="#/sessions/{session.id}" title="Unexpected resets of the DUT in this recording: open the session to see them">⚠ {resets.count} {resets.count === 1 ? 'reset' : 'resets'} · {resets.groups.slice(0, 2).map((g) => `${g.count}× ${g.label}`).join(', ')}{resets.groups.length > 2 ? ', …' : ''}</a>
+        <a class="sub bad" href="#/sessions/{session.id}" title="Unexpected resets of the board in this recording: open the session to see them">⚠ {resets.count} {resets.count === 1 ? 'reset' : 'resets'} · {resets.groups.slice(0, 2).map((g) => `${g.count}× ${g.label}`).join(', ')}{resets.groups.length > 2 ? ', …' : ''}</a>
       {/if}
     </div>
     {#if session?.battery}
@@ -145,7 +145,7 @@
       <div class="kpi">
         <div class="label">Emulated battery</div>
         <div class="value">{b.soc != null ? `${b.soc.toFixed(1)} % · ` : ''}{(b.voltage_mv / 1000).toFixed(3)} V</div>
-        <div class="sub">{b.below_cutoff ? `below the cutoff, going down to ${(b.floor_mv / 1000).toFixed(2)} V` : b.eta_s != null ? `cutoff (${(b.cutoff_mv / 1000).toFixed(2)} V) in ${b.eta_s < 3600 ? `≈ ${fmtDuration(b.eta_s)}` : fmtLife(b.eta_s / 3600)}` : 'cutoff soon'} · then {b.on_cutoff === 'hunt' ? 'brown-out hunt' : 'DUT off'}</div>
+        <div class="sub">{b.below_cutoff ? `below the cutoff, going down to ${(b.floor_mv / 1000).toFixed(2)} V` : b.eta_s != null ? `cutoff (${(b.cutoff_mv / 1000).toFixed(2)} V) in ${b.eta_s < 3600 ? `≈ ${fmtDuration(b.eta_s)}` : fmtLife(b.eta_s / 3600)}` : 'cutoff soon'} · then {b.on_cutoff === 'hunt' ? 'brown-out hunt' : 'Board off'}</div>
       </div>
     {/if}
     <div class="kpi">
@@ -235,7 +235,7 @@
   <div class="seg" role="group" aria-label="Log source">
     <button type="button" aria-pressed={usb.tab === 'uart'} onclick={() => usb.setTab('uart')}>UART</button>
     <button type="button" aria-pressed={usb.tab === 'usb'} onclick={() => usb.setTab('usb')}
-      title="The DUT's own USB console">USB{#if live.status?.usb?.wanted && live.status.usb.menu && usb.tab !== 'usb'}<span class="badge" aria-label="menu waiting"></span>{/if}</button>
+      title="The board's own USB console">USB{#if live.status?.usb?.wanted && live.status.usb.menu && usb.tab !== 'usb'}<span class="badge" aria-label="menu waiting"></span>{/if}</button>
   </div>
 {/snippet}
 

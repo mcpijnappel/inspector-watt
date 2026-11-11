@@ -1,4 +1,4 @@
-"""ESP32-family backend for flash.py: esptool over the DUT's own USB port (USB-Serial/JTAG).
+"""ESP32-family backend for flash.py: esptool over the board's own USB port (USB-Serial/JTAG).
 
 - Images already on the chip aren't written (--skip-flashed: MD5 against the flash first).
 - An upload with only the app image (option app_only, e.g. from the Arduino OTA endpoint) doesn't know where the
@@ -111,10 +111,15 @@ def find_app(images: list[Image]) -> bytes | None:
 
 class EspBackend:
     family = "esp32"
+    default_power = "ppk2"
+    missing = "the board's USB port isn't there: is the USB adapter plugged in?"
 
     def __init__(self, usb):
         self.usb = usb
         self.sim = usb.port.startswith("sim://")
+
+    def present(self) -> bool:
+        return self.usb.present()
 
     def check(self, req: FlashRequest) -> None:
         unknown = set(req.options) - set(OPTIONS)

@@ -37,14 +37,14 @@ MAX_BINS_PER_TICK = 6000  # 60 s; limits the work per tick when catching up
 @dataclass
 class SessionConfig:
     kind: str = "soak"  # detail | soak
-    voltage_mv: int | None = None  # set + DUT on at start (and again after a dropout) when given
+    voltage_mv: int | None = None  # set + board on at start (and again after a dropout) when given
     dut_power: bool = True
     wake_threshold_a: float = 500e-6
     hold_s: float = 0.5  # below threshold this long = wake over
     pre_s: float = 0.1  # raw data kept before a wake (soak)
     post_s: float = 0.5  # raw data kept after a wake (soak)
     raw_buffer_hours: float = 0.0  # soak: also keep continuous raw for the last N hours
-    auto_restore: bool = True  # after a PPK2 dropout: restore voltage + DUT power
+    auto_restore: bool = True  # after a PPK2 dropout: restore voltage + board power
     uart_baud: int | None = None
     max_duration_s: float | None = None  # stop the session by itself after this long
     battery: dict | None = None  # battery emulation (battery.BatteryConfig as a dict); None = fixed voltage

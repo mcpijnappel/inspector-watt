@@ -82,19 +82,19 @@
     <div class="what">
       {#if asking}
         <span class="t">Upload from {f.meta.host ?? 'another machine'}: {what} · <span class="mono">{f.meta.git ?? ''}</span></span>
-        <span class="s">Recording <strong>{f.question?.session_name}</strong> is running. Flashing reboots the DUT.</span>
+        <span class="s">Recording <strong>{f.question?.session_name}</strong> is running. Flashing reboots the board.</span>
       {:else if f.status === 'waiting_recording'}
         <span class="t">Upload queued: {what} · <span class="mono">{f.meta.git ?? ''}</span></span>
         <span class="s">Flashes when recording <strong>{f.waiting_for}</strong> stops · from {f.meta.host ?? '?'} · a newer upload replaces it</span>
       {:else if f.status === 'waiting_wake'}
-        <span class="t">Waiting for the DUT to wake up: {what} · <span class="mono">{f.meta.git ?? ''}</span></span>
+        <span class="t">Waiting for the board to wake up: {what} · <span class="mono">{f.meta.git ?? ''}</span></span>
         <span class="s">It's asleep; flashes on its next wake{f.wait_until ? `, or power-cycles it in ${mmss(cycleIn)}` : ' (no power-cycle)'} · from {f.meta.host ?? '?'}</span>
       {:else if active(f)}
-        <span class="t">Flashing {what} · <span class="mono">{f.meta.git ?? ''}</span>{f.status === 'flashing' ? ` · ${Math.round(f.progress)} %` : f.status === 'waking' ? ' · waking the DUT' : ''}</span>
-        <span class="s">From {f.meta.host ?? '?'} · {f.images.length} images, {mb}{f.power_cycled ? ' · it was asleep: power-cycled it first' : ''}{f.choice === 'stop' ? ' · recording stopped' : f.session_id ? ' · marked in the recording' : ''}</span>
+        <span class="t">Flashing {what} · <span class="mono">{f.meta.git ?? ''}</span>{f.status === 'flashing' ? ` · ${Math.round(f.progress)} %` : f.status === 'waking' ? ' · waking the board' : ''}</span>
+        <span class="s">From {f.meta.host ?? '?'} · {f.family === 'rp2' ? `${f.chip.toUpperCase()} UF2` : `${f.images.length} image${f.images.length === 1 ? '' : 's'}`}, {mb}{f.power_cycled ? ' · it was asleep: power-cycled it first' : ''}{f.choice === 'stop' ? ' · recording stopped' : f.session_id ? ' · marked in the recording' : ''}</span>
       {:else if f.status === 'done'}
         <span class="t">Flashed {what} · <span class="mono">{f.meta.git ?? ''}</span>{took != null ? ` in ${took} s` : ''}</span>
-        <span class="s">The DUT is booting the new firmware{f.session_id ? ' · marked in the recording' : ''}{f.choice === 'stop' ? ' · the recording was stopped first' : ''}.</span>
+        <span class="s">The board is booting the new firmware{f.session_id ? ' · marked in the recording' : ''}{f.choice === 'stop' ? ' · the recording was stopped first' : ''}.</span>
       {:else if f.status === 'failed'}
         <span class="t">Flashing {what} failed</span>
         <span class="s">{f.error}</span>

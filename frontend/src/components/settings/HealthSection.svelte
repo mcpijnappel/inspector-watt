@@ -1,8 +1,9 @@
 <script lang="ts">
-  // System health: the services, the PPK2 stream, UART, the DUT's USB, live buffer and recording. Live from the status poll.
+  // System health: the services, the PPK2 stream, UART, the board's USB, live buffer and recording. Live from the status poll.
   import { api, type Health } from '../../lib/api';
-  import { fmtBytes, fmtClock, fmtDuration } from '../../lib/format';
+  import { devPath, fmtBytes, fmtClock, fmtDuration } from '../../lib/format';
   import { live } from '../../lib/live.svelte';
+  import SectionHead from './SectionHead.svelte';
 
   let health = $state<Health | null>(null);
   let cal = $state<Record<string, unknown> | null>(null);
@@ -26,6 +27,15 @@
   const bufS = $derived(buf ? (buf.end_idx - buf.start_idx) * buf.sample_period_s : 0);
   const capS = $derived(buf ? buf.capacity * buf.sample_period_s : 0);
   type Row = [string, string, ('ok' | 'bad' | 'warn' | '')?];
+  // Services as one line of pills: all fine = one glance.
+  const services = $derived<Row[]>([
+    ['API', live.statusError ? 'unreachable' : 'running', live.statusError ? 'bad' : 'ok'],
+    ['Capture', health ? (health.capture ? 'running' : 'unreachable') : '…', health ? (health.capture ? 'ok' : 'bad') : ''],
+    ['Database', health ? (health.db ? 'running' : 'unreachable') : '…', health ? (health.db ? 'ok' : 'bad') : ''],
+    ['MCP server', health ? (health.mcp ? 'running' : 'unreachable') : '…', health ? (health.mcp ? 'ok' : 'warn') : ''],
+  ]);
+  const writes = $derived<Row>(['Recording writes', !st?.session ? '–' : st.session.active ? (st.session.db_ok ? 'ok' : st.session.error ?? 'waiting for the database') : st.session.error ?? 'not recording',
+    !st?.session ? '' : st.session.active ? (st.session.db_ok ? 'ok' : 'bad') : st.session.error ? 'bad' : '']);
 </script>
 
 {#snippet card(title: string, rows: Row[])}
@@ -39,21 +49,19 @@
   </section>
 {/snippet}
 
-<div class="section">
-  <h2 class="title">System health</h2>
-  {#if live.statusError}<div class="banner bad">Can't reach the API: {live.statusError}</div>{/if}
+<div class="s-section">
+  <SectionHead title="System health" intro="Whether every part of the tracker is running and keeping up." />
+  {#if live.statusError}<div class="s-banner">Can't reach the API: {live.statusError}</div>{/if}
+  <section class="panel services" aria-label="Services">
+    {#each [...services, writes] as [k, v, state] (k)}
+      <span class="pill" class:ok={state === 'ok'} class:bad={state === 'bad'} class:warn={state === 'warn'} title="{k}: {v}">
+        {#if state}<span class="dot" class:ok={state === 'ok'} class:bad={state === 'bad'} class:warn={state === 'warn'}></span>{/if}{k}{state === 'ok' && k !== 'Recording writes' ? '' : `: ${v}`}</span>
+    {/each}
+  </section>
   <div class="grid">
-    {@render card('Services', [
-      ['API', live.statusError ? 'unreachable' : 'running', live.statusError ? 'bad' : 'ok'],
-      ['Capture', health ? (health.capture ? 'running' : 'unreachable') : '…', health ? (health.capture ? 'ok' : 'bad') : ''],
-      ['Database', health ? (health.db ? 'running' : 'unreachable') : '…', health ? (health.db ? 'ok' : 'bad') : ''],
-      ['Recording writes', !st?.session ? '–' : st.session.active ? (st.session.db_ok ? 'ok' : st.session.error ?? 'waiting for the database') : st.session.error ?? 'not recording',
-        !st?.session ? '' : st.session.active ? (st.session.db_ok ? 'ok' : 'bad') : st.session.error ? 'bad' : ''],
-      ['MCP server', health ? (health.mcp ? 'running' : 'unreachable') : '…', health ? (health.mcp ? 'ok' : 'warn') : ''],
-    ])}
     {#if p}
       {@render card('PPK2', [
-        ['Port', p.port],
+        ['Port', devPath(p.port)],
         ['Connected', p.connected ? 'yes' : `no${p.error ? ` (${p.error})` : ''}`, p.connected ? 'ok' : 'bad'],
         ['Measuring', p.streaming ? 'yes' : 'no', p.streaming ? 'ok' : 'warn'],
         ['Sample rate', s?.rate_sps ? `${n(s.rate_sps / 1000, 2)} kS/s of ${n((s.nominal_rate_sps ?? 100000) / 1000)}` : '–'],
@@ -68,18 +76,18 @@
       ])}
     {/if}
     {#if u}
-      {@render card('UART (DUT serial)', [
-        ['Port', u.port],
+      {@render card('UART (board serial)', [
+        ['Port', devPath(u.port)],
         ['Connected', u.connected ? 'yes' : `no${u.error ? ` (${u.error})` : ''}`, u.connected ? 'ok' : 'bad'],
         ['Baud', String(u.baud)],
         ['Received', `${fmtBytes(u.bytes_read)} · ${n(u.lines)} lines`],
       ])}
     {/if}
     {#if usb}
-      {@render card('DUT USB (console, flashing)', [
-        ['Port', usb.port.replace('/host-dev/', '/dev/')],
-        ['There now', usb.present ? 'yes (DUT awake)' : 'no (asleep, off or unplugged)', usb.present ? 'ok' : ''],
-        ['Console', usb.held ? 'held by a flash' : usb.wanted ? (usb.connected ? 'open: the DUT can\'t deep-sleep' : 'open, waiting for the DUT') : 'closed', usb.wanted || usb.held ? 'warn' : ''],
+      {@render card('USB port (console, flashing)', [
+        ['Port', devPath(usb.port)],
+        ['There now', usb.present ? 'yes (board awake)' : 'no (asleep, off or unplugged)', usb.present ? 'ok' : ''],
+        ['Console', usb.held ? 'held by a flash' : usb.wanted ? (usb.connected ? 'open: the board can\'t deep-sleep' : 'open, waiting for the board') : 'closed', usb.wanted || usb.held ? 'warn' : ''],
         ['Menu waiting', usb.menu ? usb.menu.title : 'no', usb.menu ? 'warn' : ''],
         ['Error', usb.error ?? 'none', usb.error ? 'bad' : ''],
         ['Lines received', n(usb.lines)],
@@ -90,36 +98,37 @@
     {#if st}
       {@render card('Live buffer & power', [
         ['Live buffer', `${fmtDuration(bufS)} of ${fmtDuration(capS)}`],
-        ['DUT power', p?.dut_power == null ? 'unknown (after a restart)' : p.dut_power ? 'on' : 'off'],
+        ['Board power', p?.dut_power == null ? 'unknown (after a restart)' : p.dut_power ? 'on' : 'off'],
         ['Idle power-off', st.idle_power_off.after_s ? `after ${fmtDuration(st.idle_power_off.after_s)}${st.idle_power_off.in_s != null ? ` · in ${fmtDuration(st.idle_power_off.in_s)}` : ''}` : 'off'],
         ['Recording', st.session?.active && st.session.session ? `#${st.session.session.id} ${st.session.session.name} · ${fmtDuration(st.session.session.duration_s)}` : 'no'],
       ])}
     {/if}
   </div>
   {#if cal}
-    <details class="panel cal">
+    <details class="panel s-fold">
       <summary>PPK2 calibration data</summary>
-      <pre class="mono">{JSON.stringify(cal, null, 2)}</pre>
+      <pre class="mono inner">{JSON.stringify(cal, null, 2)}</pre>
     </details>
   {/if}
 </div>
 
 <style>
-  .section { display: flex; flex-direction: column; gap: 12px; }
-  .title { margin: 0; font-size: 18px; }
-  .banner { padding: 10px 14px; border-radius: 10px; }
-  .banner.bad { border: 1px solid var(--rec); color: var(--rec); background: var(--rec-bg); }
+  .services { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; background: var(--panel2); color: var(--muted); }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.bad { background: var(--rec-bg); color: var(--rec); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; align-items: start; }
   .card { padding: 12px 16px; }
   h3 { margin: 0 0 6px; font-size: 14px; }
-  dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 12px; margin: 0; }
-  dt, dd { margin: 0; padding: 5px 0; border-top: 1px solid var(--line); font-size: 12px; }
-  dt { color: var(--muted); }
+  /* one divider per row: no column gap, so the label's and the value's lines join */
+  dl { display: grid; grid-template-columns: auto minmax(0, 1fr); margin: 0; }
+  dt, dd { margin: 0; padding: 6px 0; border-top: 1px solid var(--line); font-size: 12px; }
+  dt:first-of-type, dt:first-of-type + dd { border-top: 0; }
+  dt { color: var(--muted); padding-right: 12px; }
   dd { text-align: right; overflow-wrap: anywhere; }
   dd.ok { color: var(--ok); }
   dd.bad { color: var(--rec); }
   dd.warn { color: var(--warn); }
-  .cal { padding: 10px 16px; }
-  .cal summary { cursor: pointer; font-size: 13px; color: var(--muted); }
-  pre { margin: 8px 0 0; font-size: 11px; max-height: 300px; overflow: auto; }
+  pre { margin: 0; font-size: 11px; max-height: 300px; overflow: auto; }
 </style>

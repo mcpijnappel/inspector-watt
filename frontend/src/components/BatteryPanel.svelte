@@ -1,6 +1,6 @@
 <script lang="ts">
   // Battery-emulation session: the voltage over time, how it ended, and the voltage at the last wake
-  // (in a brown-out hunt, that is about where the DUT gave up).
+  // (in a brown-out hunt, that is about where the board gave up).
   import { api, type BatteryForm, type Chemistry, type SessionEvent } from '../lib/api';
   import { batteryLabel, loadChemistries } from '../lib/battery';
   import { fmtSessionTime, fmtSpan } from '../lib/format';
@@ -78,7 +78,7 @@
       <dt>Ended</dt>
       <dd>
         {#if end}
-          {end.data.reason === 'floor' ? `reached the floor (${V(mvOf(end))})` : `reached the cutoff (${V(mvOf(end))})`} after {fmtSpan(end.t)}: DUT off
+          {end.data.reason === 'floor' ? `reached the floor (${V(mvOf(end))})` : `reached the cutoff (${V(mvOf(end))})`} after {fmtSpan(end.t)}: board off
         {:else}
           at {V(finalMv)}{battery.mode === 'charge' && steps.length && steps[steps.length - 1].data.soc != null ? ` (${Number(steps[steps.length - 1].data.soc).toFixed(1)} %)` : ''}, before the cutoff
         {/if}

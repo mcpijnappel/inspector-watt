@@ -119,7 +119,7 @@ def test_power_up_skips_commands_when_already_set(client, tmp_path):
     assert sent == [] and rec._notes[0]["kind"] == "dut_kept"
     rec2 = SessionRecorder(1, None, 0, 0, SessionConfig(voltage_mv=3300), svc.ring, svc.uart.log, -1, tmp_path, 0)
     mgr._power_up(rec2, "power_on")
-    assert len(sent) == 3 and rec2._notes[0]["kind"] == "power_on"  # voltage, source mode, DUT on
+    assert len(sent) == 3 and rec2._notes[0]["kind"] == "power_on"  # voltage, source mode, board on
 
 
 def test_auto_stream_starts_measuring_on_connect():
@@ -168,10 +168,20 @@ def test_device_limit(client):
     r = client.post("/ppk2/source", json={"voltage_mv": 3700})
     assert r.status_code == 409 and "3V3 board" in r.json()["detail"]
     assert client.post("/ppk2/source", json={"voltage_mv": 3300}).status_code == 200
-    # never above MAX_VOLTAGE_MV, whatever the device says
+    # never above the tracker's limit, whatever the device says
     assert client.put("/ppk2/device", json={"id": 8, "name": "big", "max_mv": 5000}).json()["max_voltage_mv"] == 4200
-    # no device: MAX_VOLTAGE_MV only
+    # no device: the tracker's limit only
     assert client.put("/ppk2/device", json={}).json()["device"] is None
+
+
+def test_device_sets_the_uart_speed(client):
+    assert client.get("/status").json()["uart"]["baud"] == 115200  # until a board is on the bench
+    client.put("/ppk2/device", json={"id": 7, "name": "3V3 board", "max_mv": 3600, "uart_baud": 921600})
+    assert client.get("/status").json()["uart"]["baud"] == 921600
+    client.put("/ppk2/device", json={"id": 1, "name": "XIAO", "max_mv": 4200, "uart_baud": 115200})
+    assert client.get("/status").json()["uart"]["baud"] == 115200
+    assert client.put("/ppk2/device", json={"id": 2, "name": "x", "max_mv": 4200, "uart_baud": 7}).status_code == 422
+    assert "uart_baud" not in client.get("/settings").json()["fixed"]
 
 
 def test_lower_limit_switches_dut_off(client):
@@ -198,7 +208,8 @@ def test_settings_change_while_running(monkeypatch):
             time.sleep(0.05)
         s = c.get("/settings").json()
         assert s["idle_power_off_s"] == 0 and s["spike_filter"] is True
-        assert s["fixed"]["max_voltage_mv"] == 4200 and s["fixed"]["ring_seconds"] == 10 and s["fixed"]["auto_stream"] is False
+        assert s["max_voltage_mv"] == 4200 and s["fixed"]["ring_seconds"] == 10 and s["auto_stream"] is False
+        assert s["min_free_gb"] == 10 and s["raw_mantissa_bits"] == 12 and "max_voltage_mv" not in s["fixed"]
         assert c.put("/settings", json={"idle_power_off_s": 100000}).status_code == 422
         c.post("/ppk2/source", json={"voltage_mv": 3700})
         c.post("/ppk2/dut", json={"on": True})
@@ -212,3 +223,20 @@ def test_settings_change_while_running(monkeypatch):
         st = c.get("/status").json()
         assert st["ppk2"]["dut_power"] is False and st["ppk2"]["dut_changed"]["by"] == "idle"
         assert c.put("/settings", json={}).json()["idle_power_off_s"] == 1  # nothing given: nothing changes
+
+
+def test_voltage_limit_is_a_setting(client):
+    client.post("/ppk2/source", json={"voltage_mv": 4000})
+    client.post("/ppk2/dut", json={"on": True})
+    s = client.put("/settings", json={"max_voltage_mv": 3600}).json()
+    assert s["max_voltage_mv"] == 3600
+    st = client.get("/status").json()["ppk2"]
+    assert st["hard_max_mv"] == 3600 and st["max_voltage_mv"] == 3600
+    assert st["dut_power"] is False and st["dut_changed"]["by"] == "limit"  # 4.0 V was above the new limit
+    r = client.post("/ppk2/source", json={"voltage_mv": 3700})
+    assert r.status_code == 409 and "the tracker's limit" in r.json()["detail"]
+    assert client.put("/settings", json={"max_voltage_mv": 5100}).status_code == 422
+    # a device's own limit still counts, under the tracker's
+    assert client.put("/ppk2/device", json={"id": 1, "name": "b", "max_mv": 3300}).json()["max_voltage_mv"] == 3300
+    s = client.put("/settings", json={"auto_stream": True, "min_free_gb": 20, "raw_mantissa_bits": 16}).json()
+    assert s["auto_stream"] is True

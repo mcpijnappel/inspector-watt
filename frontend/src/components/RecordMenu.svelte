@@ -101,7 +101,7 @@
       parts.push(b.on_cutoff === 'hunt' ? `brown-out hunt to ${(b.floor_mv / 1000).toFixed(2)} V` : `off at ${(b.cutoff_mv / 1000).toFixed(2)} V`);
     } else {
       if (c.voltage_mv) parts.push(`${(c.voltage_mv / 1000).toFixed(2)} V`);
-      if (c.dut_power !== false) parts.push('DUT on');
+      if (c.dut_power !== false) parts.push('board on');
     }
     if (c.wake_threshold_ua) parts.push(`wake ≥ ${c.wake_threshold_ua / 1000} mA`);
     if (c.max_duration_s) parts.push(`stop after ${c.max_duration_s / 60} min`);
@@ -259,7 +259,7 @@
                 <label class="field">Speed up<span class="input-unit"><input type="number" min="1" step="any" bind:value={bat.speedup} /><span class="muted">×</span></span></label>
                 <label class="field">Start at<span class="input-unit"><input type="number" min="1" max="100" step="any" bind:value={bat.start_soc} /><span class="muted">%</span></span></label>
               </div>
-              <div class="hint">Emptied by what the DUT really draws{bat.speedup !== 1 ? `, as if it held ${emulatedMah.toFixed(emulatedMah < 10 ? 2 : 1)} mAh (${bat.speedup}× faster)` : ''}.</div>
+              <div class="hint">Emptied by what the board really draws{bat.speedup !== 1 ? `, as if it held ${emulatedMah.toFixed(emulatedMah < 10 ? 2 : 1)} mAh (${bat.speedup}× faster)` : ''}.</div>
             {:else}
               <div class="two">
                 <label class="field">From<span class="input-unit"><input type="text" inputmode="decimal" bind:value={batStartV} /><span class="muted">V</span></span></label>
@@ -276,10 +276,10 @@
               <span>At the cutoff</span>
               <div class="kinds">
                 <button type="button" class="kind" aria-pressed={bat.on_cutoff === 'protect'} onclick={() => (bat.on_cutoff = 'protect')}>
-                  <strong>Protection</strong><span class="hint">DUT off and stop, like a battery protection circuit.</span>
+                  <strong>Protection</strong><span class="hint">Board off and stop, like a battery protection circuit.</span>
                 </button>
                 <button type="button" class="kind" aria-pressed={bat.on_cutoff === 'hunt'} onclick={() => (bat.on_cutoff = 'hunt')}>
-                  <strong>Brown-out hunt</strong><span class="hint">Keep lowering the voltage to find where the DUT gives up.</span>
+                  <strong>Brown-out hunt</strong><span class="hint">Keep lowering the voltage to find where the board gives up.</span>
                 </button>
               </div>
             </div>
@@ -301,7 +301,7 @@
           <label class="field">Stop after
             <span class="input-unit"><input type="text" inputmode="decimal" bind:value={stopMin} placeholder="no limit" /><span class="muted">min</span></span>
           </label>
-          {#if !batOn}<label class="check"><input type="checkbox" bind:checked={form.dut_power} />Power the DUT at start</label>{/if}
+          {#if !batOn}<label class="check"><input type="checkbox" bind:checked={form.dut_power} />Power the board at start</label>{/if}
         </div>
         <details class="adv">
           <summary>Advanced: raw margins, rolling buffer, recovery</summary>
@@ -311,7 +311,7 @@
             <label class="field">Wake ends after<span class="input-unit"><input type="number" min="10" bind:value={form.hold_ms} /><span class="muted">ms below</span></span></label>
             <label class="field">Rolling raw buffer<span class="input-unit"><input type="number" min="0" max="168" bind:value={form.raw_buffer_hours} /><span class="muted">h</span></span></label>
           </div>
-          <label class="check"><input type="checkbox" bind:checked={form.auto_restore} />Restore voltage + DUT power after a dropout</label>
+          <label class="check"><input type="checkbox" bind:checked={form.auto_restore} />Restore voltage + board power after a dropout</label>
           <label class="field">Notes<input class="input" type="text" bind:value={form.notes} /></label>
         </details>
         <div class="hint">{estimate}</div>
