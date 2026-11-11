@@ -2,9 +2,11 @@
   // Storage overview: disk space, the database, and raw data per session (largest first).
   import { api, type Storage, type StorageRow } from '../../lib/api';
   import { fmtBytes, fmtDuration } from '../../lib/format';
+  import SectionHead from './SectionHead.svelte';
 
   let st = $state<Storage | null>(null);
   let error = $state('');
+  let all = $state(false);
   $effect(() => {
     api.storage().then((r) => (st = r)).catch((e) => (error = (e as Error).message));
   });
@@ -17,9 +19,9 @@
   }
 </script>
 
-<div class="section">
-  <h2 class="title">Storage</h2>
-  {#if error}<div class="banner bad">{error}</div>{/if}
+<div class="s-section">
+  <SectionHead title="Storage" intro="Disk space, and how much each session keeps." />
+  {#if error}<div class="s-banner">{error}</div>{/if}
   {#if st}
     {@const d = st.disk}
     {@const minFree = (st.min_free_gb ?? 0) * 2 ** 30}
@@ -38,7 +40,7 @@
         <span><i class="sw used"></i>other files</span><span><i class="sw raw"></i>raw data</span>
         {#if minFree}<span><i class="sw limit"></i>raw writing stops below {st.min_free_gb} GB free (MIN_FREE_GB)</span>{/if}
       </div>
-      <p class="muted small">A detail session keeps every sample (about 0.7 GB per hour while the board is busy); a soak keeps 10 ms summaries plus raw data around wakes.</p>
+      <p class="faint small">Detail keeps every sample (about 0.7 GB per busy hour); soak keeps 10 ms summaries plus raw data around wakes.</p>
     </section>
 
     <section class="panel">
@@ -46,7 +48,7 @@
         <table>
           <thead><tr><th>Session</th><th>Kind</th><th class="num">Length</th><th>Raw kept</th><th class="num">Raw data</th></tr></thead>
           <tbody>
-            {#each st.sessions as r (r.id)}
+            {#each all ? st.sessions : st.sessions.slice(0, 10) as r (r.id)}
               <tr>
                 <td class="name"><a href="#/sessions/{r.id}">#{r.id} {r.name}</a>{#if r.status === 'running'} <span class="rec small">recording</span>{/if}</td>
                 <td>{r.kind}</td>
@@ -58,16 +60,15 @@
           </tbody>
         </table>
       </div>
+      {#if st.sessions.length > 10}
+        <div class="s-foot"><span>{all ? `All ${st.sessions.length}, largest first` : `10 largest of ${st.sessions.length}`}</span>
+          <button class="linkbtn" type="button" onclick={() => (all = !all)}>{all ? 'Show 10' : `Show all ${st.sessions.length}`}</button></div>
+      {/if}
     </section>
   {:else if !error}<p class="faint">Loading…</p>{/if}
 </div>
 
 <style>
-  .section { display: flex; flex-direction: column; gap: 12px; }
-  .title { margin: 0; font-size: 18px; }
-  .small { font-size: 12px; }
-  .banner { padding: 10px 14px; border-radius: 10px; }
-  .banner.bad { border: 1px solid var(--rec); color: var(--rec); background: var(--rec-bg); }
   .card { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
   .card p { margin: 0; }
   .nums { display: flex; flex-wrap: wrap; gap: 14px 36px; }
