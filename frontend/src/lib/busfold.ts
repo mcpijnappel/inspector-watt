@@ -11,7 +11,9 @@
 
 import type { BusEvent } from './bus.svelte';
 
-export type Chip = { name?: string; switch?: boolean };
+export type Chip = { name?: string; switch?: boolean; type?: string };
+/** How an SPI chip's first byte works: register address, with a read/write bit (and maybe an auto-increment bit). */
+export type SpiFormat = { read_bit: number; read_when_set?: boolean; inc_bit?: number };
 export type Chips = Record<string, Chip>;
 
 export type Item = {
@@ -53,12 +55,16 @@ export function guessSwitches(events: BusEvent[]): Set<number> {
   return new Set([...seen].filter(([, one]) => one).map(([a]) => a));
 }
 
-export function switchesOf(events: BusEvent[], chips: Chips): Set<number> {
+/** The I2C switches: guessed from the traffic, unless the board's chip list says otherwise (an explicit switch flag,
+ * or a chip type from the library: `switchTypes` holds the lower-case names of the switch types). */
+export function switchesOf(events: BusEvent[], chips: Chips, switchTypes: Set<string> = new Set()): Set<number> {
   const out = guessSwitches(events);
   for (const [key, c] of Object.entries(chips)) {
     const a = Number(key.split(':')[1]);
-    if (!key.startsWith('m:') || c.switch == null) continue;
-    if (c.switch) out.add(a); else out.delete(a);
+    if (!key.startsWith('m:')) continue;
+    const isSwitch = c.switch ?? (c.type ? switchTypes.has(c.type.toLowerCase()) : null);
+    if (isSwitch == null) continue;
+    if (isSwitch) out.add(a); else out.delete(a);
   }
   return out;
 }
@@ -73,8 +79,9 @@ const isPortWrite = (e: BusEvent, switches: Set<number>) => {
 type SwitchState = { kind: 'unknown' } | { kind: 'closed' } | { kind: 'open'; port: string };
 const RESYNC_GAP_MS = 2000; // a gap this long is probably another decode window: the switch state is unknown again
 
-/** Messages -> items. `msPerIdx`: stream index to milliseconds. `showSwitch`: keep the port writes as rows. */
-export function toItems(events: BusEvent[], switches: Set<number>, msPerIdx: number, showSwitch = false): Item[] {
+/** Messages -> items. `msPerIdx`: stream index to milliseconds. `showSwitch`: keep the port writes as rows.
+ * `spi`: the board's SPI chip's format, so its transfers become register reads and writes. */
+export function toItems(events: BusEvent[], switches: Set<number>, msPerIdx: number, showSwitch = false, spi?: SpiFormat): Item[] {
   // Pass 1: which addresses are on the main bus (seen while all ports are closed) and which behind a known port.
   const main = new Set<number>(), behind = new Set<number>();
   const walk = (visit: (e: BusEvent, i: number, st: SwitchState) => void) => {
@@ -111,8 +118,17 @@ export function toItems(events: BusEvent[], switches: Set<number>, msPerIdx: num
     const e = events[i], t = e.start_idx * msPerIdx;
     if (used.has(i)) continue;
     if (e.kind === 'spi') {
-      out.push({ t, idx: e.start_idx, key: 'spi', addr: null, port: null, kind: 'spi', nack: false, mosi: e.data.mosi ?? [], miso: e.data.miso ?? [],
-        sig: `spi|${hx((e.data.mosi ?? []).slice(0, 4))}` });
+      const mosi = e.data.mosi ?? [], miso = e.data.miso ?? [];
+      const base = { t, idx: e.start_idx, key: 'spi', addr: null, port: null, nack: false };
+      if (spi && mosi.length) {
+        // first byte: the register address and read/write bit; the rest is the data (MISO read, MOSI written)
+        const bit = spi.read_bit ?? 0x80;
+        const set = (mosi[0] & bit) !== 0;
+        const read = (spi.read_when_set ?? true) ? set : !set;
+        const reg = [mosi[0] & 0xff & ~bit & ~(spi.inc_bit ?? 0)];
+        out.push(read ? { ...base, kind: 'reg', reg, r: miso.slice(1), sig: `reg||${hx(reg)}|` }
+          : { ...base, kind: 'set', reg, w: mosi.slice(1), sig: `set||${hx(reg)}|${hx(mosi.slice(1))}` });
+      } else out.push({ ...base, kind: 'spi', mosi, miso, sig: `spi|${hx(mosi.slice(0, 4))}` });
       continue;
     }
     const a = e.data.addr ?? 0, parts = e.data.parts ?? [], nack = !!e.data.nack, st = states[i];
@@ -217,13 +233,14 @@ export function pollEvery(n: Node): number | null {
   return best;
 }
 
-/** "reads 00, 03 · sets 00, 03": what a group of a chip's steps does. */
-export function summary(its: Item[]): string[] {
+/** "reads 00, 03 · sets 00, 03": what a group of a chip's steps does. `name`: a register's or command's name from the
+ * sensor library, when it has one ("reads STATUS2 · sets CFG0"). */
+export function summary(its: Item[], name: (it: Item) => string | undefined = () => undefined): string[] {
   const reads = new Set<string>(), sets = new Set<string>(), other = new Set<string>();
   for (const it of its) {
-    if (it.kind === 'reg') reads.add(hx(it.reg));
-    else if (it.kind === 'set') sets.add(hx(it.reg));
-    else if (it.kind === 'cmd' || it.kind === 'write') other.add('command ' + hx(it.w));
+    if (it.kind === 'reg') reads.add(name(it) ?? hx(it.reg));
+    else if (it.kind === 'set') sets.add(name(it) ?? hx(it.reg));
+    else if (it.kind === 'cmd' || it.kind === 'write') other.add(name(it) ?? 'command ' + hx(it.w));
     else if (it.kind === 'probe') other.add(it.ok ? 'answers' : 'not found');
     else if (it.kind === 'read') other.add('read');
     else if (it.kind === 'spi') other.add('transfers');

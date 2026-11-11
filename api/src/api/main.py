@@ -22,6 +22,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 
+from . import chips as chip_library
 from .migrate import migrate
 from .resources import Resources
 from . import ota
@@ -51,6 +52,8 @@ async def lifespan(app: FastAPI):
     await migrate(pool)
     await seed_mcp()
     await seed_flash()
+    if (n := await chip_library.seed(q_one, Jsonb)):
+        log.info("sensor library: %d built-in chips added", n)
     ota_transport = None
     if OTA_PORT:
         try:
@@ -828,25 +831,30 @@ async def delete_device(did: int):
 
 
 CHIP_KEY = re.compile(r"^(m|[0-7]):([0-9]{1,3})$")
+SPI_KEY = "spi"  # the SPI chip on the analyzer's chip select (one for now)
 
 
 class BusChip(BaseModel):
     name: str = Field("", max_length=40)
-    switch: bool | None = None  # an I2C switch (TCA9548A-style): its writes open ports. None: guess from the traffic
+    type: str | None = Field(None, max_length=40)  # its chip type in the sensor library (Settings → Devices & sensors → Sensor library)
+    switch: bool | None = None  # an I2C switch (TCA9548A-style): its writes open ports. None: from its type, or guessed
 
 
 def check_bus_chips(chips: dict[str, BusChip]) -> dict:
-    """Keys are "<where>:<address>": m (main bus) or a switch port 0-7, and a 7-bit address."""
+    """Keys are "<where>:<address>": m (main bus) or a switch port 0-7, and a 7-bit address; or "spi" for the SPI chip
+    on the analyzer's chip select."""
     if len(chips) > 128:
         raise HTTPException(422, "at most 128 chips")
     out = {}
     for key, c in chips.items():
         m = CHIP_KEY.match(key)
-        if not m or not 0x03 <= int(m[2]) <= 0x77:
-            raise HTTPException(422, f"not a chip position: {key!r} (m:<address> or <port>:<address>, address 3-119)")
+        if key != SPI_KEY and (not m or not 0x03 <= int(m[2]) <= 0x77):
+            raise HTTPException(422, f"not a chip position: {key!r} (m:<address> or <port>:<address>, address 3-119, or spi)")
         c = c.model_dump(exclude_none=True)
         c["name"] = c["name"].strip()
-        if c["name"] or "switch" in c:
+        if not c.get("type"):
+            c.pop("type", None)
+        if c["name"] or "switch" in c or "type" in c:
             out[key] = c
     return out
 
@@ -860,9 +868,23 @@ async def get_bus_chips(did: int):
 
 
 @app.put("/api/devices/{did:int}/bus-chips")
-async def put_bus_chips(did: int, body: dict[str, BusChip]):
-    """All of the board's chip names at once (the Bus tab sends the whole set)."""
+async def put_bus_chips(did: int, body: dict[str, BusChip], request: Request):
+    """All of the board's chips at once: name, type from the sensor library, I2C switch. Agents only when Settings →
+    Agents allows them to edit the library."""
+    if request.headers.get("x-pst-client") == "mcp" and not (await mcp_settings()).get("library"):
+        raise HTTPException(403, "agents may not edit boards' chip lists: switch it on in Settings → Agents")
     chips = check_bus_chips(body)
+    types = {c["type"].lower() for c in chips.values() if c.get("type")}
+    library = {r["n"]: r for r in await q_all("SELECT lower(name) AS n, name, body FROM chip_types")} if types else {}
+    if types - set(library):
+        raise HTTPException(422, f"not in the sensor library: {', '.join(sorted(types - set(library)))}")
+    for k, c in chips.items():
+        if c.get("type"):
+            bus = "spi" if k == SPI_KEY else "i2c"
+            t = library[c["type"].lower()]
+            if bus not in {b.get("bus") for b in t["body"].get("buses", [])}:
+                raise HTTPException(422, f"{t['name']} has no {bus.upper()} entry in the sensor library")
+    chips = {k: {**c, "type": library[c["type"].lower()]["name"]} if c.get("type") else c for k, c in chips.items()}
     r = await q_one("UPDATE devices SET bus_chips = %s, updated_at = now() WHERE id = %s RETURNING bus_chips",
                     (Jsonb(chips), did))
     if r is None:
@@ -1005,7 +1027,7 @@ async def storage():
 
 async def mcp_settings() -> dict:
     """{lan, hardware, tokens: [{id, name, token, created}]}. An older single "token" becomes the token "default"."""
-    m = {"lan": False, "hardware": False, **(await get_setting_value("mcp") or {})}
+    m = {"lan": False, "hardware": False, "library": False, **(await get_setting_value("mcp") or {})}
     tokens = m.get("tokens")
     if tokens is None:
         tokens = [{"id": 1, "name": "default", "token": m["token"], "created": None}] if m.get("token") else []
@@ -1014,7 +1036,7 @@ async def mcp_settings() -> dict:
 
 
 async def save_mcp(m: dict) -> None:
-    await save_setting("mcp", {"lan": m["lan"], "hardware": m["hardware"], "tokens": m["tokens"]})
+    await save_setting("mcp", {"lan": m["lan"], "hardware": m["hardware"], "library": m.get("library", False), "tokens": m["tokens"]})
 
 
 def new_token(tokens: list[dict], name: str) -> dict:
@@ -1059,6 +1081,7 @@ async def mcp_status():
 class McpIn(BaseModel):
     lan: bool | None = None
     hardware: bool | None = None
+    library: bool | None = None  # agents may edit the sensor library and boards' chip lists
 
 
 @app.put("/api/mcp")
@@ -1069,6 +1092,8 @@ async def mcp_set(body: McpIn):
         m["lan"] = body.lan
     if body.hardware is not None:
         m["hardware"] = body.hardware
+    if body.library is not None:
+        m["library"] = body.library
     if m["lan"] and not m["tokens"]:
         new_token(m["tokens"], "default")
     await save_mcp(m)
@@ -1362,3 +1387,5 @@ async def forward(request: Request, path: str) -> Response:
 from . import modules  # noqa: E402 (needs the helpers above)
 
 modules.setup(app, capture, get_setting_value, save_setting)
+# through lambdas, so tests can swap the database functions
+chip_library.setup(app, lambda *a: q_one(*a), lambda *a: q_all(*a), lambda: mcp_settings(), Jsonb)

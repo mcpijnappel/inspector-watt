@@ -108,13 +108,15 @@ class Bus {
     } catch { /* shown as plain addresses */ }
   }
 
-  /** Name a chip (empty name: forget it) or mark it as an I2C switch, for the board on the bench. */
+  /** Name a chip, give it a type from the sensor library or mark it as an I2C switch, for the board on the bench
+   * (nothing left: the chip comes off the board's list). */
   async setChip(key: string, chip: Chip) {
     const id = devices.activeId;
     if (id == null) throw new Error('Pick the board on the bench first (top bar)');
     const next = { ...this.chips };
     const name = (chip.name ?? '').trim();
-    if (name || chip.switch != null) next[key] = { ...(name ? { name } : {}), ...(chip.switch != null ? { switch: chip.switch } : {}) };
+    const c = { ...(name ? { name } : {}), ...(chip.type ? { type: chip.type } : {}), ...(chip.switch != null ? { switch: chip.switch } : {}) };
+    if (Object.keys(c).length) next[key] = c;
     else delete next[key];
     this.chips = await api.setBusChips(id, next);
     this.chipsOf = id;
