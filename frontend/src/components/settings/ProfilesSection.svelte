@@ -4,6 +4,7 @@
   import { api, type Preset, type Profile, type SessionSummary } from '../../lib/api';
   import { devices } from '../../lib/devices.svelte';
   import RulesEditor from '../RulesEditor.svelte';
+  import SectionHead from './SectionHead.svelte';
 
   let profiles = $state<Profile[]>([]);
   let sessions = $state<SessionSummary[]>([]);
@@ -12,6 +13,8 @@
   let confirmDelete = $state<number | null>(null);
   let confirmPreset = $state<number | null>(null);
   let editing = $state<{ profile: number; session: number } | null>(null);
+  let renaming = $state<number | null>(null);
+  let usedOpen = $state<number | null>(null); // the profile whose full session list is open
 
   async function load() {
     try {
@@ -36,9 +39,21 @@
     }
   }
   function rename(p: Profile, name: string) {
+    renaming = null;
     name = name.trim();
     if (name && name !== p.name) void act(() => api.updateProfile(p.id, { name }));
   }
+  function renameKey(e: KeyboardEvent) {
+    const el = e.target as HTMLInputElement;
+    if (e.key === 'Enter') el.blur();
+    if (e.key === 'Escape') {
+      renaming = null; // blur after this sees renaming == null and keeps the old name
+    }
+  }
+  const focus = (el: HTMLInputElement) => {
+    el.focus();
+    el.select();
+  };
   function duplicate(p: Profile) {
     let name = `${p.name} copy`;
     for (let n = 2; profiles.some((x) => x.name === name); n++) name = `${p.name} copy ${n}`;
@@ -60,18 +75,22 @@
   }
 </script>
 
-<div class="section">
-  <h2 class="title">Phase profiles</h2>
-  <p class="intro muted">A profile holds the phase rules and cycle types for one firmware. Every session that uses it is analysed with them, and a device can give it to its new sessions.</p>
-  {#if error}<div class="banner bad">{error}</div>{/if}
+<div class="s-section">
+  <SectionHead title="Phase profiles" intro="Phase rules and cycle types for one firmware. Sessions using a profile are analysed with it." />
+  {#if error}<div class="s-banner">{error}</div>{/if}
 
   {#each profiles as p (p.id)}
     {@const used = usedBy(p)}
     {@const devs = deviceNames(p)}
     <section class="panel card" aria-label={p.name}>
       <div class="top">
-        <input class="input name" type="text" value={p.name} maxlength="100" aria-label="Profile name"
-          onchange={(e) => rename(p, (e.target as HTMLInputElement).value)} onkeydown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
+        {#if renaming === p.id}
+          <input class="input name" type="text" value={p.name} maxlength="100" aria-label="Profile name" use:focus
+            onblur={(e) => renaming === p.id && rename(p, (e.target as HTMLInputElement).value)} onkeydown={renameKey} />
+        {:else}
+          <h3>{p.name}</h3>
+        {/if}
+        {#if devs.length}<span class="badge">default for {devs.join(', ')}</span>{/if}
         <span class="muted small">{p.rules.length} phase{p.rules.length === 1 ? '' : 's'} · {p.types.length} cycle type{p.types.length === 1 ? '' : 's'}</span>
       </div>
       <div class="phases">
@@ -79,17 +98,21 @@
       </div>
       {#if p.types.length}<div class="small muted">Cycle types: {p.types.map((t) => t.name).join(', ')}</div>{/if}
       <div class="small">
-        {#if used.length}Used by {#each used.slice(0, 6) as s, i (s.id)}{i ? ', ' : ''}<a href="#/sessions/{s.id}">#{s.id} {s.name}</a>{/each}{used.length > 6 ? ` and ${used.length - 6} more` : ''}{:else}<span class="faint">No sessions use it.</span>{/if}
-        {#if devs.length}<span class="muted"> · default for {devs.join(', ')}</span>{/if}
+        {#if used.length}
+          {@const list = usedOpen === p.id ? used : used.slice(0, 3)}
+          Used by {used.length} session{used.length === 1 ? '' : 's'}: {#each list as s, i (s.id)}{i ? ', ' : ''}<a href="#/sessions/{s.id}">#{s.id} {s.name}</a>{/each}
+          {#if used.length > 3}<button class="linkbtn" type="button" onclick={() => (usedOpen = usedOpen === p.id ? null : p.id)}>{usedOpen === p.id ? 'Show 3' : 'Show all'}</button>{/if}
+        {:else}<span class="faint">No sessions use it.</span>{/if}
       </div>
       {#if confirmDelete === p.id}
-        <div class="confirm">Delete {p.name}?{used.length ? ` Its ${used.length} session${used.length === 1 ? '' : 's'} then use the most recently used profile.` : ''}
+        <div class="s-confirm">Delete {p.name}?{used.length ? ` Its ${used.length} session${used.length === 1 ? '' : 's'} then use the most recently used profile.` : ''}
           <button class="btn small danger" type="button" onclick={() => { confirmDelete = null; void act(() => api.deleteProfile(p.id)); }}>Delete</button>
           <button class="btn small ghost" type="button" onclick={() => (confirmDelete = null)}>Cancel</button>
         </div>
       {:else}
         <div class="actions">
           <button class="btn small" type="button" disabled={!sessions.length} title={sessions.length ? '' : 'Record a session first: rules are tested on one'} onclick={() => edit(p)}>Edit rules &amp; types</button>
+          <button class="btn small ghost" type="button" onclick={() => (renaming = p.id)}>Rename</button>
           <button class="btn small ghost" type="button" onclick={() => duplicate(p)}>Duplicate</button>
           <button class="btn small ghost" type="button" disabled={profiles.length < 2} title={profiles.length < 2 ? 'The last profile stays' : ''} onclick={() => (confirmDelete = p.id)}>Delete</button>
         </div>
@@ -97,8 +120,8 @@
     </section>
   {/each}
 
-  <h2 class="title sub">Record presets</h2>
-  <p class="intro muted">Saved from the Record menu (Record ▾ → other settings → Save as preset).</p>
+  <h3 class="s-sub">Record presets</h3>
+  <p class="s-note">Made from the Record menu: Record ▾ → other settings → Save as preset.</p>
   {#if presets.length}
     <section class="panel list">
       {#each presets as pr (pr.id)}
@@ -124,22 +147,15 @@
 {/if}
 
 <style>
-  .section { display: flex; flex-direction: column; gap: 12px; }
-  .title { margin: 0; font-size: 18px; }
-  .title.sub { margin-top: 14px; }
-  .intro { margin: 0; font-size: 13px; }
-  .banner { padding: 10px 14px; border-radius: 10px; }
-  .banner.bad { border: 1px solid var(--rec); color: var(--rec); background: var(--rec-bg); }
   .card { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
   .top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
   .name { width: min(320px, 100%); min-height: 34px; font-weight: 600; }
+  h3 { margin: 0; font-size: 15px; font-weight: 600; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--sel); color: var(--accent); font-weight: 600; }
   .phases { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; }
   .ph { display: inline-flex; align-items: center; gap: 6px; }
   .ph i { width: 10px; height: 10px; border-radius: 2px; }
-  .small { font-size: 12px; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; }
-  .confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--panel2); }
-  .btn.danger { background: var(--rec-strong); border-color: var(--rec-strong); color: #fff; }
   .list { display: flex; flex-direction: column; }
   .row { display: flex; align-items: center; gap: 8px; padding: 10px 16px; }
   .row + .row { border-top: 1px solid var(--line); }

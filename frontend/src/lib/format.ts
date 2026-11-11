@@ -118,3 +118,8 @@ export function fmtSpan(s: number): string {
   if (s < 3600) return `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`;
   return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
 }
+
+/** A device port as the host names it: the containers see the host's /dev under /host-dev. */
+export function devPath(p: string | null | undefined): string {
+  return p ? p.replace(/^\/host-dev\//, '/dev/') : '–';
+}

@@ -1,0 +1,55 @@
+/* Shared by the Settings sections (Settings.svelte wraps them in .settings). One look for the same things:
+   section column, sub-headings, error banner, cards, folds, table footers, copyable commands. */
+.settings p { margin: 0; }
+.settings .small { font-size: 12px; }
+.settings .s-section { display: flex; flex-direction: column; gap: 14px; }
+.settings .s-sub { margin: 6px 0 0; font-size: 15px; font-weight: 600; }
+.settings .s-sub + .s-note { margin-top: -8px; }
+.settings .s-note { font-size: 12px; color: var(--muted); }
+.settings .s-banner { padding: 10px 14px; border-radius: 10px; border: 1px solid var(--rec); color: var(--rec); background: var(--rec-bg); }
+.settings .s-card { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.settings .s-label { font-weight: 600; font-size: 13px; }
+.settings .s-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* Label + one-line hint on the left, the control on the right (Measurement & safety pattern). */
+.settings .s-row { display: flex; align-items: center; gap: 12px 16px; padding: 12px 0; flex-wrap: wrap; }
+.settings .s-row + .s-row { border-top: 1px solid var(--line); }
+.settings .s-row > .txt { flex: 1; min-width: min(240px, 100%); display: flex; flex-direction: column; gap: 3px; }
+.settings .s-row .hint { font-size: 12px; color: var(--muted); }
+.settings .s-row input[type='checkbox'] { width: 18px; height: 18px; accent-color: var(--accent); }
+
+/* Folded reference material: details.s-fold, as its own panel or inside a card. */
+.settings details.s-fold > summary { cursor: pointer; font-size: 13px; color: var(--muted); list-style: none; display: flex; align-items: center; gap: 6px; }
+.settings details.s-fold > summary::-webkit-details-marker { display: none; }
+.settings details.s-fold > summary::before { content: '▸'; font-size: 11px; transition: transform 0.15s; }
+.settings details.s-fold[open] > summary::before { transform: rotate(90deg); }
+.settings details.s-fold > .inner { padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.settings details.panel.s-fold { padding: 12px 16px; }
+.settings .s-card details.s-fold { border-top: 1px solid var(--line); padding-top: 10px; }
+@media (prefers-reduced-motion: reduce) { .settings details.s-fold > summary::before { transition: none; } }
+
+/* Tables inside a panel, and the line under them ("Newest 10 · Show all"). */
+.settings .s-tablewrap { overflow-x: auto; }
+.settings .s-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.settings .s-table th, .settings .s-table td { text-align: left; padding: 8px 12px; border-top: 1px solid var(--line); vertical-align: top; }
+.settings .s-table th { font-weight: 500; color: var(--faint); font-size: 12px; border-top: 0; white-space: nowrap; }
+.settings .s-table th:first-child, .settings .s-table td:first-child { padding-left: 16px; }
+.settings .s-table th:last-child, .settings .s-table td:last-child { padding-right: 16px; }
+.settings .s-table td.mono { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.settings .s-table .num { text-align: right; white-space: nowrap; }
+.settings .s-table .sub { display: block; color: var(--faint); font-size: 11.5px; margin-top: 2px; }
+.settings .s-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--faint); flex-wrap: wrap; }
+.settings .s-empty { padding: 14px 16px; font-size: 13px; color: var(--muted); }
+.settings .linkbtn { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; font-size: 12.5px; }
+.settings .linkbtn:hover { text-decoration: underline; }
+
+/* Copyable commands and tokens. */
+.settings .s-cmd { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.settings .s-cmd code, .settings .s-cmd pre { flex: 1; min-width: 0; margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--panel2); font-family: var(--mono); font-size: 12px; overflow-x: auto; white-space: pre; line-height: 1.55; }
+@media (max-width: 560px) {
+  .settings .s-cmd { flex-wrap: wrap; justify-content: flex-end; }
+  .settings .s-cmd code, .settings .s-cmd pre { flex-basis: 100%; }
+}
+.settings .s-token { font-family: var(--mono); font-size: 12px; padding: 4px 8px; border-radius: 6px; background: var(--panel2); overflow-wrap: anywhere; }
+.settings .s-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--panel2); }
+.settings .btn.danger { background: var(--rec-strong); border-color: var(--rec-strong); color: #fff; }

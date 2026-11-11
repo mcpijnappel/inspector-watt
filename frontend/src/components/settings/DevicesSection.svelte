@@ -4,6 +4,7 @@
   import { api, type Device, type DeviceForm, type Profile } from '../../lib/api';
   import { devices } from '../../lib/devices.svelte';
   import { live } from '../../lib/live.svelte';
+  import SectionHead from './SectionHead.svelte';
 
   const BAUDS = [9600, 57600, 115200, 230400, 460800, 921600];
   const EMPTY: DeviceForm = { name: '', notes: '', voltage_mv: 3700, max_mv: 4200, wake_threshold_ua: 5000, uart_baud: null, profile_id: null };
@@ -83,21 +84,19 @@
   }
 
   function summary(d: Device): string {
-    const parts = [`${V(d.voltage_mv)} (max ${V(d.max_mv)})`, `wake ≥ ${d.wake_threshold_ua / 1000} mA`];
+    const cap = hardMax && hardMax < d.max_mv ? `, capped at ${V(hardMax)} by MAX_VOLTAGE_MV` : '';
+    const parts = [`${V(d.voltage_mv)} (max ${V(d.max_mv)}${cap})`, `wake ≥ ${d.wake_threshold_ua / 1000} mA`];
     if (d.uart_baud) parts.push(`${d.uart_baud} baud`);
     parts.push(d.profile_name ? `phase rules: ${d.profile_name}` : 'phase rules: last used');
     return parts.join(' · ');
   }
 </script>
 
-<div class="section">
-  <div class="head">
-    <h2 class="title">Devices</h2>
-    <span class="spacer"></span>
-    <button class="btn primary" type="button" disabled={editing === 'new'} onclick={() => edit(null)}>Add device</button>
-  </div>
-  <p class="intro muted">The device on the bench sets the voltage for Turn on, the record defaults, the phase rules of new sessions and a voltage limit the capture service enforces{hardMax ? ` (never above ${V(hardMax)}, MAX_VOLTAGE_MV)` : ''}.</p>
-  {#if error && editing == null}<div class="banner bad">{error}</div>{/if}
+<div class="s-section">
+  <SectionHead title="Devices" intro="The board on the bench sets the Turn on voltage, record defaults and phase rules for new sessions.">
+    {#snippet action()}<button class="btn primary" type="button" disabled={editing === 'new'} onclick={() => edit(null)}>Add device</button>{/snippet}
+  </SectionHead>
+  {#if error && editing == null}<div class="s-banner">{error}</div>{/if}
 
   {#snippet editor()}
     <form class="form" onsubmit={save}>
@@ -146,12 +145,12 @@
         <div class="mono small sum">{summary(d)}</div>
         {#if d.notes}<p class="notes">{d.notes}</p>{/if}
         {#if confirmSwitch === d.id}
-          <div class="confirm">{devices.active?.name ?? 'The DUT'} is powered. Switch it off and put {d.name} on the bench?
+          <div class="s-confirm">{devices.active?.name ?? 'The DUT'} is powered. Switch it off and put {d.name} on the bench?
             <button class="btn small" type="button" disabled={busy} onclick={() => use(d, true)}>Switch off and change</button>
             <button class="btn small ghost" type="button" onclick={() => (confirmSwitch = null)}>Cancel</button>
           </div>
         {:else if confirmDelete === d.id}
-          <div class="confirm">Delete {d.name}? Its sessions stay, without a device.
+          <div class="s-confirm">Delete {d.name}? Its sessions stay, without a device.
             <button class="btn small danger" type="button" onclick={() => remove(d.id)}>Delete</button>
             <button class="btn small ghost" type="button" onclick={() => (confirmDelete = null)}>Cancel</button>
           </div>
@@ -170,12 +169,6 @@
 </div>
 
 <style>
-  .section { display: flex; flex-direction: column; gap: 14px; }
-  .head { display: flex; align-items: center; gap: 12px; }
-  .title { margin: 0; font-size: 18px; }
-  .intro { margin: 0; font-size: 13px; }
-  .banner { padding: 10px 14px; border-radius: 10px; }
-  .banner.bad { border: 1px solid var(--rec); color: var(--rec); background: var(--rec-bg); }
   .card { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
   .card.active { border-color: var(--accent); }
   .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -184,7 +177,6 @@
   .small { font-size: 12px; }
   .sum { color: var(--muted); }
   .notes { margin: 0; font-size: 13px; white-space: pre-wrap; }
-  .confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--panel2); }
   .actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
   .actions.left { justify-content: flex-start; }
   .form { display: flex; flex-direction: column; gap: 12px; }
@@ -192,5 +184,4 @@
   .wide { grid-column: 1 / -1; }
   textarea.input { resize: vertical; font: inherit; padding: 8px 10px; }
   select.input { min-height: 38px; }
-  .btn.danger { background: var(--rec-strong); border-color: var(--rec-strong); color: #fff; }
 </style>
