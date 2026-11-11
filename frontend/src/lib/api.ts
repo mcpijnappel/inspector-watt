@@ -371,6 +371,8 @@ export type ModuleSetting = {
   unit?: string;
   default: unknown;
   choices?: (number | string)[];
+  /** Settings of one group (e.g. "wiring") are shown together on one row. */
+  group?: string;
   min?: number;
   max?: number;
 };
@@ -504,6 +506,10 @@ export const api = {
   storage: () => req<Storage>('GET', '/api/storage'),
   modules: () => req<ModuleInfo[]>('GET', '/api/modules'),
   setModuleSettings: (name: string, values: Record<string, unknown>) => req<Record<string, unknown>>('PUT', `/api/modules/${name}/settings`, values),
+  /** A module's latest events (Live), after the last one seen. */
+  moduleLiveEvents: <T>(name: string, afterSeq: number) => req<T[]>('GET', `/api/modules/${name}/events/live?after_seq=${afterSeq}&limit=2000`),
+  /** The logic analyzer: decode the last seconds of its buffer (the transactions also land in the Live list). */
+  analyzerDecode: <T>(seconds: number) => req<T>('POST', '/api/modules/analyzer/decode', { seconds }),
   mcp: () => req<McpStatus>('GET', '/api/mcp'),
   setMcpLan: (lan: boolean) => req<McpStatus>('PUT', '/api/mcp', { lan }),
   setMcpHardware: (hardware: boolean) => req<McpStatus>('PUT', '/api/mcp', { hardware }),
