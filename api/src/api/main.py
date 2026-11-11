@@ -148,7 +148,7 @@ _reset_cache: dict[tuple[int, int], list[dict]] = {}
 
 
 async def session_resets(s: dict, n_lines: int | None = None) -> list[dict]:
-    """Unexpected DUT resets in a session (see resets.py). Cached until the session has more log lines."""
+    """Unexpected board resets in a session (see resets.py). Cached until the session has more log lines."""
     if n_lines is None:
         n_lines = (await q_one("SELECT count(*) AS n FROM uart_lines WHERE session_id = %s", (s["id"],)))["n"]
     key = (s["id"], n_lines)
@@ -428,7 +428,7 @@ class ProfileIn(BaseModel):
     name: str | None = None
     rules: list[RuleIn] | None = None
     types: list[TypeIn] | None = None
-    # Regex for the log line that says what woke the DUT; its first group is the reason. "" = the default.
+    # Regex for the log line that says what woke the board; its first group is the reason. "" = the default.
     wake_pattern: str | None = Field(None, max_length=300)
 
 
@@ -1262,7 +1262,7 @@ async def flash_cancel(job_id: int, request: Request):
 
 @app.post("/api/flash/{job_id:int}/now")
 async def flash_now(job_id: int, request: Request):
-    """Waiting for the DUT to wake: power-cycle it now (from the UI)."""
+    """Waiting for the board to wake: power-cycle it now (from the UI)."""
     return await forward(request, f"/flash/{job_id}/now")
 
 

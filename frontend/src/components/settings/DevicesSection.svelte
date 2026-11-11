@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Devices (DUTs): defaults for power-on and recording, a voltage limit capture enforces, and the phase rules
+  // Devices (boards): defaults for power-on and recording, a voltage limit capture enforces, and the phase rules
   // their new sessions get. One card per device; Edit unfolds the form in place.
   import { api, type Device, type DeviceForm, type Profile } from '../../lib/api';
   import { devices } from '../../lib/devices.svelte';
@@ -145,7 +145,7 @@
         <div class="mono small sum">{summary(d)}</div>
         {#if d.notes}<p class="notes">{d.notes}</p>{/if}
         {#if confirmSwitch === d.id}
-          <div class="s-confirm">{devices.active?.name ?? 'The DUT'} is powered. Switch it off and put {d.name} on the bench?
+          <div class="s-confirm">{devices.active?.name ?? 'The board'} is powered. Switch it off and put {d.name} on the bench?
             <button class="btn small" type="button" disabled={busy} onclick={() => use(d, true)}>Switch off and change</button>
             <button class="btn small ghost" type="button" onclick={() => (confirmSwitch = null)}>Cancel</button>
           </div>

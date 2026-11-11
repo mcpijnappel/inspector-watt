@@ -26,7 +26,7 @@
     bands?: ChartBand[];
     /** bands: light wash + bottom strip · lines: thin line at each phase start + thin strip · ticks: only the lines */
     bandStyle?: 'bands' | 'lines' | 'ticks';
-    /** Things done to the DUT (a firmware flash): a wash in the flash colour with a line and a label at the start. */
+    /** Things done to the board (a firmware flash): a wash in the flash colour with a line and a label at the start. */
     highlights?: { a: number; b: number; label?: string }[];
     onselect?: (r: Range) => void;
     endLabel?: string;

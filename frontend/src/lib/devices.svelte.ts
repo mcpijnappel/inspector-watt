@@ -1,4 +1,4 @@
-// The devices (DUTs) and which one is on the bench. Shared by the top bar, Live, Record and the Devices page.
+// The devices (boards) and which one is on the bench. Shared by the top bar, Live, Record and the Devices page.
 import { api, type Device, type DeviceForm } from './api';
 
 class Devices {

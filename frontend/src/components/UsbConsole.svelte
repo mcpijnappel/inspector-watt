@@ -1,6 +1,6 @@
 <script lang="ts">
-  // The DUT's USB console on the Live page (next to the UART log): open/close, its output, a key menu the firmware
-  // prints (as buttons), and a line to send. Closed, the DUT sees no USB; open, it can't deep-sleep.
+  // The board's USB console on the Live page (next to the UART log): open/close, its output, a key menu the firmware
+  // prints (as buttons), and a line to send. Closed, the board sees no USB; open, it can't deep-sleep.
   import type { Snippet } from 'svelte';
   import { fmtClock, splitLevel } from '../lib/format';
   import { live } from '../lib/live.svelte';
@@ -66,8 +66,8 @@
     <div class="closed"><p class="muted">This capture service has no USB port configured.</p></div>
   {:else if !u.wanted && !usb.lines.length}
     <div class="closed">
-      <h3>The DUT's USB console</h3>
-      <p>The port stays closed, so the DUT sees no USB and deep-sleeps normally. Open it to catch the debug menu on the next boot and to send commands. While it's open the DUT <strong>won't deep-sleep</strong>, which changes what you measure.</p>
+      <h3>The board's USB console</h3>
+      <p>The port stays closed, so the board sees no USB and deep-sleeps normally. Open it to catch the debug menu on the next boot and to send commands. While it's open the board <strong>won't deep-sleep</strong>, which changes what you measure.</p>
       <dl class="facts">
         <dt>Port</dt><dd>{u.port.replace('/host-dev/', '/dev/')} · {u.present ? 'there now' : 'not there (asleep, off or unplugged)'}</dd>
         <dt>Saved</dt><dd>not with recordings: it repeats the UART log</dd>
@@ -79,7 +79,7 @@
     {#if flashing}
       <div class="note flashing">Flashing: the console lets go of the port{u.wanted ? ' and opens again for the new firmware' : ''}.</div>
     {:else if u.wanted}
-      <div class="note open"><span class="dot warn"></span><span><strong>Open:</strong> the DUT can't deep-sleep. It sleeps again ~30 s after you close.{u.present ? '' : ' Waiting for it to wake up.'}</span></div>
+      <div class="note open"><span class="dot warn"></span><span><strong>Open:</strong> the board can't deep-sleep. It sleeps again ~30 s after you close.{u.present ? '' : ' Waiting for it to wake up.'}</span></div>
     {/if}
     <div class="lines mono" bind:this={box} {onscroll}>
       {#each usb.lines as l, i (i)}
@@ -95,7 +95,7 @@
     </div>
     {#if menu}
       <div class="menucard" role="group" aria-label={menu.title}>
-        <div class="mhead"><span class="mtitle">{menu.title}</span><span class="prompt">The DUT is waiting for a key · {menu.prompt}</span></div>
+        <div class="mhead"><span class="mtitle">{menu.title}</span><span class="prompt">The board is waiting for a key · {menu.prompt}</span></div>
         <div class="keys">
           {#each menu.options as o, i (o.key)}
             <button class="key" class:first={i === 0} class:risky={risky(o.label)} type="button" disabled={usb.busy} onclick={() => press(o.key, o.label)}>
@@ -106,7 +106,7 @@
         {#if confirmKey}
           {@const o = menu.options.find((x) => x.key === confirmKey)}
           <div class="confirm" role="alert">
-            <span><strong>{o?.label}?</strong> This changes what's stored on the DUT.</span>
+            <span><strong>{o?.label}?</strong> This changes what's stored on the board.</span>
             <span class="spacer"></span>
             <button class="btn small danger" type="button" onclick={() => o && press(o.key, o.label)}>Send {confirmKey}</button>
             <button class="btn small ghost" type="button" onclick={() => (confirmKey = null)}>Cancel</button>

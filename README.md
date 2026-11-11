@@ -61,7 +61,7 @@ Screenshots: the built-in simulator.
 - A **Nordic Power Profiler Kit II** (PPK2), used as the power supply ("source mode") for the sensor.
 - A **USB-to-UART adapter** on the sensor's debug serial port (the udev rule expects a CH343; see
   [Install](#install) for another one).
-- The sensor (DUT, "device under test"). On this bench: a Seeed XIAO ESP32-C6 powered through its battery
+- The sensor board (the "device under test"). On this bench: a Seeed XIAO ESP32-C6 powered through its battery
   pins (see [Hardware notes](#hardware-notes)).
 - Optional: the sensor's **own USB port**, through an adapter that **blocks the 5 V** (data lines and ground
   only), for its USB console and [flashing firmware](#flashing-firmware). A third free USB port.
@@ -241,7 +241,7 @@ The gear icon in the top bar:
 ## Agents (MCP)
 
 The `mcp` service lets AI agents (Claude Code, other MCP clients) list and analyse sessions, search the
-serial log, summarise cycles, estimate battery life, look at the live measurement, read the DUT's USB console
+serial log, summarise cycles, estimate battery life, look at the live measurement, read the board's USB console
 and recent firmware uploads, and edit phase rules and cycle types. Hardware control is off unless you switch
 it on (below). It never flashes firmware and can't see the upload token.
 
@@ -333,7 +333,7 @@ What happens:
   (its sleep cycle stays as it is) and power-cycles it with the PPK2 if it hasn't woken after 90 s. Or it
   always waits (never power-cycles), or it power-cycles it right away. Set in Settings → Firmware upload, or
   per upload (`custom_tracker_when_asleep`, `--when-asleep`). While it waits, the banner can power-cycle it
-  now or cancel. Power-cycling needs the PPK2 voltage set by the tracker (switch the DUT on once).
+  now or cancel. Power-cycling needs the PPK2 voltage set by the tracker (switch the board on once).
 - **Recording running:** the upload asks (in the terminal, or answer in the web UI): keep recording and mark
   the flash as a `flash` event, stop the recording first, flash when the recording stops, or cancel.
   `custom_tracker_on_recording` / `--on-recording` can answer up front. "After" queues it: the upload command
@@ -438,7 +438,7 @@ rsync -a data/ /path/to/backup/data/                                       # ful
 | PPK2 or UART "not connected" | `ls -l /dev/ppk2 /dev/dut-uart`. Missing: replug, check the udev rule (and the adapter's ids). After a replug the stream resumes by itself. |
 | "Permission denied" on the port | Headless machine: use `OWNER=` in the udev rule (see Install). User id not 1000: set `UID`/`GID` in `.env`. |
 | Lost samples or gaps | Settings → System health. Plug the PPK2 straight into the computer (no hub, short cable) and keep heavy work off that machine. |
-| DUT power shows "unknown" | Normal after the capture service restarted: it's known again after the next switch. The sensor keeps running. |
+| Board power shows "unknown" | Normal after the capture service restarted: it's known again after the next switch. The sensor keeps running. |
 | Detail recording stops writing files | The disk reached `MIN_FREE_GB` free space. Free space or delete old sessions. |
 | Containers restart for no reason (Bazzite) | Run compose through `./dc`, not `docker compose` from `/home/...`. |
 | Upload says "flash token missing or wrong" | `PST_FLASH_TOKEN` must be the token from `/api/flash/settings`. |

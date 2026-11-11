@@ -119,7 +119,7 @@ def test_power_up_skips_commands_when_already_set(client, tmp_path):
     assert sent == [] and rec._notes[0]["kind"] == "dut_kept"
     rec2 = SessionRecorder(1, None, 0, 0, SessionConfig(voltage_mv=3300), svc.ring, svc.uart.log, -1, tmp_path, 0)
     mgr._power_up(rec2, "power_on")
-    assert len(sent) == 3 and rec2._notes[0]["kind"] == "power_on"  # voltage, source mode, DUT on
+    assert len(sent) == 3 and rec2._notes[0]["kind"] == "power_on"  # voltage, source mode, board on
 
 
 def test_auto_stream_starts_measuring_on_connect():

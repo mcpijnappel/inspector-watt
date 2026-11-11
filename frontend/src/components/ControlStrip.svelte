@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The live page's controls in one place: DUT power + voltage, live/pause, record, save.
+  // The live page's controls in one place: Board power + voltage, live/pause, record, save.
   import { api } from '../lib/api';
   import { fmtClock, fmtDuration } from '../lib/format';
   import { devices } from '../lib/devices.svelte';
@@ -55,7 +55,7 @@
     else if (!powered) volts = rememberedVolts(); // off or unknown: what Turn on will use
   });
 
-  // Nothing comes in while the DUT is off or measuring is off: the live view is paused then, also when you
+  // Nothing comes in while the board is off or measuring is off: the live view is paused then, also when you
   // open the page or something else switches it off (idle timer, battery cutoff, another browser). It goes
   // back to live when power comes back, unless you paused it yourself.
   let autoPaused = false;
@@ -116,7 +116,7 @@
     }
     offNotice = false;
     const ok = await run(async () => {
-      // Set the voltage first: the DUT never powers up at a voltage this app didn't set.
+      // Set the voltage first: the board never powers up at a voltage this app didn't set.
       if (!p?.voltage_set_by_us || p.voltage_mv !== wantMv || p.mode !== 'source') await api.setSource(wantMv);
       await api.setDut(true);
       if (!p?.streaming) await api.setStream(true);
@@ -173,22 +173,22 @@
 <section class="strip panel" aria-label="Controls">
   <div class="group">
     {#if on}
-      <button class="btn power on" type="button" disabled={busy || !p?.connected} onclick={askPowerOff} title="Switch the DUT off">
+      <button class="btn power on" type="button" disabled={busy || !p?.connected} onclick={askPowerOff} title="Switch the board off">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M12 3v9M6.3 6.3a8 8 0 1011.4 0"></path></svg>
         On · {((p?.voltage_mv ?? 0) / 1000).toFixed(2)} V
       </button>
     {:else}
-      <button class="btn power" type="button" disabled={busy || !p?.connected || !voltsValid} onclick={powerOn} title="Set the voltage and power the DUT">
+      <button class="btn power" type="button" disabled={busy || !p?.connected || !voltsValid} onclick={powerOn} title="Set the voltage and power the board">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M12 3v9M6.3 6.3a8 8 0 1011.4 0"></path></svg>
         {on == null ? 'Power ?' : 'Off'} · Turn on
       </button>
       {#if on == null}
-        <button class="btn ghost" type="button" disabled={busy || !p?.connected} onclick={askPowerOff} title="State unknown after a restart: make sure the DUT is off">Off</button>
+        <button class="btn ghost" type="button" disabled={busy || !p?.connected} onclick={askPowerOff} title="State unknown after a restart: make sure the board is off">Off</button>
       {/if}
     {/if}
     <form class="volts" onsubmit={(e) => { e.preventDefault(); if (on) applyVolts(); else powerOn(); }}>
       <span class="input-unit" class:bad={!voltsValid}>
-        <input type="text" inputmode="decimal" bind:value={volts} oninput={() => (voltsTouched = true)} aria-label="DUT voltage in volts" size="4"
+        <input type="text" inputmode="decimal" bind:value={volts} oninput={() => (voltsTouched = true)} aria-label="Board voltage in volts" size="4"
           disabled={!!session?.battery} title={session?.battery ? 'Battery emulation sets the voltage while this session records' : undefined} />
         <span class="muted">V</span>
       </span>
@@ -239,7 +239,7 @@
     </div>
   {:else if offNotice && on === false}
     <div class="note" aria-live="polite">
-      <span>DUT off · live view paused.</span>
+      <span>Board off · live view paused.</span>
       <span class="spacer"></span>
       <button class="btn small ghost" type="button" disabled={busy} onclick={stopMeasuring}>Stop measuring too</button>
       <button class="btn small ghost" type="button" onclick={backToLive}>Back to live</button>

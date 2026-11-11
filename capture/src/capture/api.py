@@ -39,7 +39,7 @@ class VoltageIn(BaseModel):
 
 class OnOffIn(BaseModel):
     on: bool
-    by: str = Field("user", pattern="^(user|agent)$")  # who switched (DUT power): the web UI or an agent (MCP)
+    by: str = Field("user", pattern="^(user|agent)$")  # who switched (board power): the web UI or an agent (MCP)
 
 
 class SettingsIn(BaseModel):
@@ -164,7 +164,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         sessions = SessionManager(svc, Store(cfg.database_url), data_dir, int(cfg.min_free_gb * 2**30),
                                   cfg.raw_mantissa_bits)
     flasher = Flasher(svc, svc.usb, sessions)
-    # Don't switch the DUT off under a recording or a flash.
+    # Don't switch the board off under a recording or a flash.
     svc.idle.busy = (lambda: sessions.active is not None or flasher.busy) if sessions else (lambda: flasher.busy)
 
     @asynccontextmanager
@@ -307,7 +307,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             raise HTTPException(409, str(e)) from e
         return {"sent_bytes": n}
 
-    # the DUT's own USB: console (opened on demand) and flashing -----------------------------------------------
+    # the board's own USB: console (opened on demand) and flashing -----------------------------------------------
     def flash_brief() -> dict | None:
         """The running (or last) flash job without its log, for status polls."""
         j = flasher.latest()
@@ -349,7 +349,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     if svc.usb.sim_factory is not None:
         @app.post("/sim/usb")
         def sim_usb(body: OnOffIn):
-            """Simulator only: the DUT's USB port there (awake) or gone (asleep), for trying uploads to a sleeping DUT."""
+            """Simulator only: the board's USB port there (awake) or gone (asleep), for trying uploads to a sleeping board."""
             svc.usb.sim_factory.present = body.on
             return svc.usb.status()
 
@@ -384,7 +384,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/flash/{job_id}/cancel")
     def flash_cancel(job_id: int):
-        """Cancel an upload that's still waiting (for an answer, the recording, or the DUT to wake)."""
+        """Cancel an upload that's still waiting (for an answer, the recording, or the board to wake)."""
         try:
             return flasher.cancel(job_id).to_dict()
         except FlashError as e:
@@ -392,7 +392,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/flash/{job_id}/now")
     def flash_now(job_id: int):
-        """Waiting for the DUT to wake: power-cycle it now instead."""
+        """Waiting for the board to wake: power-cycle it now instead."""
         try:
             return flasher.power_cycle_now(job_id).to_dict()
         except FlashError as e:

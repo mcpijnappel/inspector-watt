@@ -151,7 +151,7 @@
       <section class="panel s-card">
         <div class="s-row single">
           <div class="txt"><strong class="state">Let agents control the hardware</strong>
-            <span class="hint">DUT power and voltage, measuring and recording, the USB console. Each agent session asks you once.</span></div>
+            <span class="hint">Board power and voltage, measuring and recording, the USB console. Each agent session asks you once.</span></div>
           <input type="checkbox" checked={st.hardware} disabled={busy} aria-label="Let agents control the hardware"
             onchange={(e) => setHardware((e.target as HTMLInputElement).checked)} />
         </div>

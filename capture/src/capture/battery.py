@@ -2,7 +2,7 @@
 
 Chemistries are approximate open-circuit curves per cell (state of charge % -> mV), times the number of cells.
 They are rest voltages: the sag under load (current x internal resistance) is not emulated; the PPK2 can't
-follow millisecond peaks over USB. A small series resistor between PPK2 and DUT gives a real sag.
+follow millisecond peaks over USB. A small series resistor between PPK2 and board gives a real sag.
 
 Two ways to drain:
 - "charge": state of charge = start - measured charge / emulated capacity. The emulated capacity is the
@@ -10,9 +10,9 @@ Two ways to drain:
 - "time": a straight sweep from `start_mv` down to the cutoff over `sweep_min` minutes.
 
 At the cutoff voltage:
-- "protect": like a battery protection circuit: the DUT is switched off and the session stops.
+- "protect": like a battery protection circuit: the board is switched off and the session stops.
 - "hunt": brown-out hunting: the voltage keeps going down (same slope as just before the cutoff) to
-  `floor_mv`, then the DUT is switched off and the session stops.
+  `floor_mv`, then the board is switched off and the session stops.
 """
 
 from __future__ import annotations

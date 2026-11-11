@@ -27,7 +27,7 @@
   let name = $state('');
   let rules = $state<Rule[]>([]);
   let types = $state<CycleType[]>([]);
-  /** Regex for the log line that says what woke the DUT ('' = the default). */
+  /** Regex for the log line that says what woke the board ('' = the default). */
   let wakePattern = $state('');
   /** The phases as saved: the type counts use those. */
   let savedRules = '';
@@ -206,7 +206,7 @@
       {/each}
       <button class="btn ghost add" type="button" onclick={add}>+ Add phase (or right-click a log line)</button>
       <div class="rule wake">
-        <div class="top"><strong class="small">Wake reason</strong><span class="muted small">the log line that says what woke the DUT; the reason goes in brackets</span>
+        <div class="top"><strong class="small">Wake reason</strong><span class="muted small">the log line that says what woke the board; the reason goes in brackets</span>
           {#if counts}<span class="found" class:low={wakeCount < counts.cycles * 0.9}>{wakeCount} / {counts.cycles}</span>{/if}
         </div>
         <div class="bottom">

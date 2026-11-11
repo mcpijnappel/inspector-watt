@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Pick the device on the bench. Changing it while the DUT is powered switches the DUT off first (the next
+  // Pick the device on the bench. Changing it while the board is powered switches the board off first (the next
   // board may not take the same voltage); not possible while a session records.
   import { api, type Device } from '../lib/api';
   import { devices } from '../lib/devices.svelte';
@@ -43,7 +43,7 @@
   <div class="title">Device on the bench</div>
   {#if confirm}
     <div class="confirm">
-      <p>{devices.active?.name ?? 'The DUT'} is powered. Switch it off and change to <strong>{confirm.name}</strong>?</p>
+      <p>{devices.active?.name ?? 'The board'} is powered. Switch it off and change to <strong>{confirm.name}</strong>?</p>
       <div class="row">
         <button class="btn small" type="button" disabled={busy} onclick={() => confirm && pick(confirm, true)}>Switch off and change</button>
         <button class="btn small ghost" type="button" onclick={() => (confirm = null)}>Cancel</button>

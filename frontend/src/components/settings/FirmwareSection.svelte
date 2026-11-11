@@ -1,8 +1,8 @@
 <script lang="ts">
-  // Firmware upload: the DUT's USB port and the last uploads first; then how to set each build system up to flash
+  // Firmware upload: the board's USB port and the last uploads first; then how to set each build system up to flash
   // through the tracker, per board (ESP32: PlatformIO, PlatformIO over Arduino OTA, arduino-cli, ESP-IDF, other;
   // RP2040/RP2350: PlatformIO, arduino-cli, pico-sdk/other), starting with the upload token; last, what happens
-  // when an upload comes in while the DUT sleeps.
+  // when an upload comes in while the board sleeps.
   import { api, type FlashJob } from '../../lib/api';
   import { copyText } from '../../lib/copy';
   import { devPath, fmtClock } from '../../lib/format';
@@ -177,7 +177,7 @@ python pst_flash.py build/blink.uf2`);
     if (j.status === 'done') return 'flashed';
     if (j.status === 'waiting_choice') return 'waiting for an answer';
     if (j.status === 'waiting_recording') return 'queued: after the recording';
-    if (j.status === 'waiting_wake') return j.wait_until ? 'waiting for the DUT to wake' : 'waiting for the DUT to wake (no power-cycle)';
+    if (j.status === 'waiting_wake') return j.wait_until ? 'waiting for the board to wake' : 'waiting for the board to wake (no power-cycle)';
     return j.status;
   }
   function note(j: FlashJob): string {
@@ -200,7 +200,7 @@ python pst_flash.py build/blink.uf2`);
 {/snippet}
 
 <div class="s-section">
-  <SectionHead title="Firmware upload" intro="Flash the DUT from any build system on your network, over its own USB port." />
+  <SectionHead title="Firmware upload" intro="Flash the board from any build system on your network, over its own USB port." />
   {#if error}<div class="s-banner">{error}</div>{/if}
 
   <section class="panel">
@@ -208,7 +208,7 @@ python pst_flash.py build/blink.uf2`);
       <div class="s-status">
         <span class="dot" class:ok={u?.present} class:warn={!!u?.wanted} class:flash={!!u?.held}></span>
         <strong class="state">USB port: {usbState}</strong>
-        {#if u}<span class="muted small">{devPath(u.port)}{u.wanted ? ' · the DUT stays awake while it is open' : u.present ? ' · DUT awake, port kept closed' : ' · shows up on each wake, kept closed'}</span>{/if}
+        {#if u}<span class="muted small">{devPath(u.port)}{u.wanted ? ' · the board stays awake while it is open' : u.present ? ' · board awake, port kept closed' : ' · shows up on each wake, kept closed'}</span>{/if}
         <span class="spacer"></span>
         <span class="small muted">When asleep: {policy} · <button class="linkbtn" type="button" onclick={toAsleep}>Change</button></span>
       </div>
@@ -388,9 +388,9 @@ python pst_flash.py build/blink.uf2`);
     </details>
   </section>
 
-  <h3 class="s-sub" id="fw-asleep">When an upload comes in while the DUT sleeps</h3>
+  <h3 class="s-sub" id="fw-asleep">When an upload comes in while the board sleeps</h3>
   <section class="panel s-card">
-    <div class="choices" role="radiogroup" aria-label="When the DUT sleeps">
+    <div class="choices" role="radiogroup" aria-label="When the board sleeps">
       <label class="choice"><input type="radio" name="asleep" value="wait" checked={whenAsleep === 'wait'} disabled={busy} onchange={() => saveAsleep('wait', wakeWait)} />
         Wait for its next wake, power-cycle after
         <span class="nowrap"><input class="secs" type="number" min="5" max="3600" step="5" bind:value={wakeWait} disabled={busy || whenAsleep !== 'wait'}
@@ -400,7 +400,7 @@ python pst_flash.py build/blink.uf2`);
       <label class="choice"><input type="radio" name="asleep" value="cycle" checked={whenAsleep === 'cycle'} disabled={busy} onchange={() => saveAsleep('cycle', wakeWait)} />
         Power-cycle right away</label>
     </div>
-    <p class="faint small">{ASLEEP_HINT[whenAsleep]} Power-cycling needs the voltage set by the tracker (switch the DUT on once); the banner can always power-cycle or cancel.</p>
+    <p class="faint small">{ASLEEP_HINT[whenAsleep]} Power-cycling needs the voltage set by the tracker (switch the board on once); the banner can always power-cycle or cancel.</p>
   </section>
 </div>
 

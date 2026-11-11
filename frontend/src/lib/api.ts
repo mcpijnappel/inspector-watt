@@ -9,7 +9,7 @@ export type Ppk2Status = {
   voltage_mv: number | null;
   voltage_set_by_us: boolean;
   dut_power: boolean | null;
-  /** Last DUT power change: who did it (user, session start/stop, idle auto-off) and when (unix s). */
+  /** Last board power change: who did it (user, session start/stop, idle auto-off) and when (unix s). */
   dut_changed: { on: boolean; by: 'user' | 'session' | 'idle' | 'limit' | 'flash' | 'agent'; at: number } | null;
   spike_filter: boolean;
   /** Effective limit: the device's maximum, capped by MAX_VOLTAGE_MV (hard_max_mv). */
@@ -57,12 +57,12 @@ export type ActiveSession = {
 
 export type SessionStatus = { active: boolean; db_ok: boolean; error: string | null; session?: ActiveSession };
 
-/** The DUT's own USB port (console + flashing). Closed unless someone opens the console. */
+/** The board's own USB port (console + flashing). Closed unless someone opens the console. */
 export type UsbStatus = {
   port: string;
-  /** The port exists: the DUT is awake (it disappears in deep sleep). */
+  /** The port exists: the board is awake (it disappears in deep sleep). */
   present: boolean;
-  /** Someone has the console open (the DUT can't deep-sleep then). */
+  /** Someone has the console open (the board can't deep-sleep then). */
   wanted: boolean;
   connected: boolean;
   /** Flashing: esptool has the port. */
@@ -104,7 +104,7 @@ export type FlashJob = {
   /** PPK2 stream indices of the flash (live chart shading). */
   start_idx: number | null;
   end_idx: number | null;
-  /** waiting_wake: when it power-cycles the DUT instead (unix time). */
+  /** waiting_wake: when it power-cycles the board instead (unix time). */
   wait_until: number | null;
   /** waiting_recording: the recording it waits for. */
   waiting_for: string | null;
@@ -121,7 +121,7 @@ export type Status = {
   flash?: FlashJob | null;
   buffer: { generation: number; start_idx: number; end_idx: number; end_wall: number | null; sample_period_s: number; capacity: number };
   session: SessionStatus | null;
-  /** DUT switches off after `after_s` without a viewer while nothing records; in_s = null: it won't. */
+  /** Board switches off after `after_s` without a viewer while nothing records; in_s = null: it won't. */
   idle_power_off: { after_s: number; in_s: number | null };
   time: number;
 };
@@ -158,7 +158,7 @@ export type BatteryForm = {
   floor_mv: number;
 };
 
-/** A device (DUT) on the bench: its defaults, its voltage limit and the phase rules new sessions get. */
+/** A device (board) on the bench: its defaults, its voltage limit and the phase rules new sessions get. */
 export type DeviceForm = {
   name: string;
   notes: string;
@@ -223,7 +223,7 @@ export type SessionSummary = {
   raw_bytes?: number;
 };
 
-/** Unexpected DUT resets of one kind with the same log line before them (numbers ignored). */
+/** Unexpected board resets of one kind with the same log line before them (numbers ignored). */
 export type ResetGroup = {
   kind: string;
   /** "brownout", "watchdog", "crash", "software reset", "power lost", or the chip's own name. */
@@ -292,7 +292,7 @@ export type CycleType = {
   /** Only cycles that begin in a wake with one of these wake reasons. */
   woken_by?: string[];
 };
-/** wake_pattern: regex for the log line that says what woke the DUT (first group = the reason); null = default. */
+/** wake_pattern: regex for the log line that says what woke the board (first group = the reason); null = default. */
 export type Profile = { id: number; name: string; rules: Rule[]; types: CycleType[]; wake_pattern?: string | null; updated_at?: string };
 /** A cycle type's cycles in a session: [start, end) indices into all phases of all cycles, in order. */
 export type TypeResult = {
@@ -348,7 +348,7 @@ export type BatteryWhatIf = { sleep_s?: number | null; without?: string[]; type?
 export type Measurement = {
   idle_power_off_s: number;
   spike_filter: boolean;
-  /** Uploads to a sleeping DUT: wait for its next wake (power-cycle after flash_wake_wait_s) or power-cycle now. */
+  /** Uploads to a sleeping board: wait for its next wake (power-cycle after flash_wake_wait_s) or power-cycle now. */
   flash_when_asleep: 'wait' | 'always' | 'cycle';
   flash_wake_wait_s: number;
   fixed: { max_voltage_mv: number; min_free_gb: number; ring_seconds: number; raw_mantissa_bits: number; auto_stream: boolean; uart_baud: number; ppk2_port: string; uart_port: string };
@@ -401,7 +401,7 @@ async function req<T>(method: string, path: string, body?: unknown, signal?: Abo
 }
 
 export const api = {
-  /** viewer: this poll comes from an open browser, which keeps the DUT from switching off when idle. */
+  /** viewer: this poll comes from an open browser, which keeps the board from switching off when idle. */
   status: (viewer = false) => req<Status>('GET', `/api/device/status${viewer ? '?viewer=true' : ''}`),
   setSource: (voltage_mv: number) => req<Ppk2Status>('POST', '/api/device/ppk2/source', { voltage_mv }),
   setDut: (on: boolean) => req<Ppk2Status>('POST', '/api/device/ppk2/dut', { on }),
