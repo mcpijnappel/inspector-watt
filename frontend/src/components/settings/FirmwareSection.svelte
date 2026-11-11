@@ -1,19 +1,23 @@
 <script lang="ts">
   // Firmware upload: the DUT's USB port and the last uploads first; then how to set each build system up to flash
-  // through the tracker (PlatformIO, PlatformIO over Arduino OTA, ESP-IDF, other), starting with the upload token;
-  // last, what happens when an upload comes in while the DUT sleeps.
+  // through the tracker, per board (ESP32: PlatformIO, PlatformIO over Arduino OTA, ESP-IDF, other; RP2040/RP2350:
+  // PlatformIO, arduino-cli, pico-sdk/other), starting with the upload token; last, what happens when an upload
+  // comes in while the DUT sleeps.
   import { api, type FlashJob } from '../../lib/api';
   import { copyText } from '../../lib/copy';
   import { devPath, fmtClock } from '../../lib/format';
   import { live } from '../../lib/live.svelte';
   import SectionHead from './SectionHead.svelte';
 
-  type Way = 'pio' | 'ota' | 'idf' | 'other';
+  type Board = 'esp' | 'rp';
+  type Way = 'pio' | 'ota' | 'idf' | 'cli' | 'other';
   type Asleep = 'wait' | 'always' | 'cycle';
-  const WAYS: { id: Way; label: string }[] = [
-    { id: 'pio', label: 'PlatformIO' }, { id: 'ota', label: 'PlatformIO OTA' },
-    { id: 'idf', label: 'ESP-IDF' }, { id: 'other', label: 'Other' },
-  ];
+  const BOARDS: { id: Board; label: string }[] = [{ id: 'esp', label: 'ESP32' }, { id: 'rp', label: 'RP2040 / RP2350' }];
+  const WAYS: Record<Board, { id: Way; label: string }[]> = {
+    esp: [{ id: 'pio', label: 'PlatformIO' }, { id: 'ota', label: 'PlatformIO OTA' }, { id: 'idf', label: 'ESP-IDF' }, { id: 'other', label: 'Other' }],
+    rp: [{ id: 'pio', label: 'PlatformIO' }, { id: 'cli', label: 'Arduino / arduino-cli' }, { id: 'other', label: 'pico-sdk / other' }],
+  };
+  const BOARD_KEY = 'pst.firmware.board';
   const WAY_KEY = 'pst.firmware.way';
   const OS_KEY = 'pst.firmware.os';
   const URL_KEY = 'pst.firmware.url';
@@ -29,7 +33,10 @@
 
   let token = $state<string | null>(null);
   let otaPort = $state<number | null>(null);
-  let way = $state<Way>(saved<Way>(WAY_KEY, ['pio', 'ota', 'idf', 'other'], 'pio'));
+  let board = $state<Board>(saved<Board>(BOARD_KEY, ['esp', 'rp'], 'esp'));
+  let wayPick = $state<Way>(saved<Way>(WAY_KEY, ['pio', 'ota', 'idf', 'cli', 'other'], 'pio'));
+  // A way the other board doesn't have (OTA, ESP-IDF on an RP): its PlatformIO tab.
+  const way = $derived<Way>(WAYS[board].some((w) => w.id === wayPick) ? wayPick : 'pio');
   let os = $state<'sh' | 'ps'>(saved<'sh' | 'ps'>(OS_KEY, ['sh', 'ps'], 'sh'));
   let jobs = $state<FlashJob[]>([]);
   let error = $state('');
@@ -72,6 +79,19 @@ python pst_flash.py firmware.bin                     # an app image alone
 python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
   const upload = 'pio run -e xiao_c6_tracker -t upload';
   const otaUpload = 'pio run -e xiao_c6_ota -t upload';
+  const rpIni = $derived(`[env:xiao_rp2040_tracker]
+extends = env:seeed_xiao_rp2040
+upload_protocol = custom
+extra_scripts = post:pst_flash.py
+custom_tracker_url = ${url}
+; custom_tracker_power = ppk2   ; when it's soldered to the PPK2 instead of on USB power`);
+  const rpUpload = 'pio run -e xiao_rp2040_tracker -t upload';
+  const rpCliCmd = $derived(`arduino-cli compile --fqbn rp2040:rp2040:seeed_xiao_rp2040 --export-binaries
+python pst_flash.py --url ${url} build/rp2040.rp2040.seeed_xiao_rp2040/`);
+  const rpOtherCmd = $derived(`${os === 'sh' ? 'export PST_URL=' : '$env:PST_URL="'}${url}${os === 'sh' ? '' : '"'}
+python pst_flash.py build/blink.uf2`);
+  // esp32c6 -> ESP32-C6, rp2040 -> RP2040
+  const chipName = (c: string) => c.toUpperCase().replace(/^(ESP32)(\w+)$/, '$1-$2');
 
   // Same words as the USB chip in the top bar.
   const usbState = $derived(!u ? 'no port configured' : u.held ? 'flashing' : u.wanted ? (u.present ? 'console open' : 'console open · asleep') : u.present ? 'closed' : 'asleep');
@@ -161,6 +181,7 @@ python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
   function note(j: FlashJob): string {
     if (j.status === 'failed' || j.status === 'cancelled') return j.error ?? '';
     const parts = [];
+    if (j.power === 'usb') parts.push('on USB power');
     if (j.power_cycled) parts.push('power-cycled first');
     if (j.choice === 'stop') parts.push('recording stopped');
     else if (j.session_id) parts.push(`marked in session ${j.session_id}`);
@@ -177,7 +198,7 @@ python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
 {/snippet}
 
 <div class="s-section">
-  <SectionHead title="Firmware upload" intro="Flash the DUT from any build system on your network, over its USB port while the PPK2 powers it." />
+  <SectionHead title="Firmware upload" intro="Flash the DUT from any build system on your network, over its own USB port." />
   {#if error}<div class="s-banner">{error}</div>{/if}
 
   <section class="panel">
@@ -199,7 +220,7 @@ python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
               <tr>
                 <td class="mono">{fmtClock(j.created).slice(0, 5)}</td>
                 <td>{j.meta.host ?? '?'}{#if j.meta.source}<span class="sub">{VIA[j.meta.source] ?? j.meta.source}</span>{/if}</td>
-                <td class="mono">{j.meta.version ?? '–'}{#if j.meta.git}<span class="sub">{j.meta.git}</span>{/if}</td>
+                <td class="mono">{j.meta.version ?? j.meta.project ?? '–'}{#if j.chip || j.meta.git}<span class="sub">{[j.chip && chipName(j.chip), j.meta.git].filter(Boolean).join(' · ')}</span>{/if}</td>
                 <td><span class="res"><span class="dot" class:ok={j.status === 'done'} class:bad={j.status === 'failed'} class:flash={!j.finished}></span>{result(j)}</span></td>
                 <td class="mono num">{took(j)}</td>
                 <td class="muted note">{note(j)}</td>
@@ -216,9 +237,15 @@ python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
 
   <h3 class="s-sub">Set up your build</h3>
   <section class="panel s-card">
-    <div class="seg ways" role="group" aria-label="Build system">
-      {#each WAYS as w (w.id)}
-        <button type="button" aria-pressed={way === w.id} onclick={() => { way = w.id; keep(WAY_KEY, w.id); }}>{w.label}</button>
+    <!-- Two levels: the board first (big), then its build systems as tabs under it. -->
+    <div class="board" role="group" aria-label="Board">
+      {#each BOARDS as b (b.id)}
+        <button type="button" aria-pressed={board === b.id} onclick={() => { board = b.id; keep(BOARD_KEY, b.id); }}>{b.label}</button>
+      {/each}
+    </div>
+    <div class="tabs" role="group" aria-label="Build system">
+      {#each WAYS[board] as w (w.id)}
+        <button type="button" aria-pressed={way === w.id} onclick={() => { wayPick = w.id; keep(WAY_KEY, w.id); }}>{w.label}</button>
       {/each}
     </div>
     {#if local}
@@ -251,7 +278,7 @@ python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
               <button type="button" aria-pressed={os === 'sh'} onclick={() => { os = 'sh'; keep(OS_KEY, 'sh'); }}>Linux / macOS</button>
               <button type="button" aria-pressed={os === 'ps'} onclick={() => { os = 'ps'; keep(OS_KEY, 'ps'); }}>Windows</button>
             </div>
-            {#if way === 'ota'}<span class="small faint">OTA uses it as the password.</span>{/if}
+            {#if board === 'esp' && way === 'ota'}<span class="small faint">OTA uses it as the password.</span>{/if}
           </div>
           <div class="s-cmd"><code>{exportLine(shown)}</code>{@render copyBtn(exportLine(token), 'export')}</div>
         {:else}
@@ -259,7 +286,7 @@ python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
         {/if}
       </li>
 
-      {#if way !== 'ota'}
+      {#if !(board === 'esp' && way === 'ota')}
         <li>
           <div class="s-label">{way === 'pio' ? 'Put pst_flash.py next to platformio.ini' : 'Download pst_flash.py'}</div>
           <div class="dl"><a class="btn small primary" href="/downloads/pst_flash.py" download="pst_flash.py">Download pst_flash.py</a>
@@ -267,7 +294,32 @@ python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
         </li>
       {/if}
 
-      {#if way === 'pio'}
+      {#if board === 'rp'}
+        {#if way === 'pio'}
+          <li>
+            <div class="s-label">Add an environment to platformio.ini</div>
+            <div class="s-cmd"><pre>{rpIni}</pre>{@render copyBtn(rpIni, 'rpini')}</div>
+            <p class="faint small">For arduino-pico (platform raspberrypi). <span class="mono">extends</span> names your environment: a Pico is <span class="mono">env:pico</span>.</p>
+          </li>
+          <li>
+            <div class="s-label">Upload</div>
+            <div class="s-cmd"><code>{rpUpload}</code>{@render copyBtn(rpUpload, 'rpup')}</div>
+            <p class="faint small">The tracker restarts the board into its boot loader and flashes it with picotool. On USB power, a running recording is left alone.</p>
+          </li>
+        {:else if way === 'cli'}
+          <li>
+            <div class="s-label">Build and upload</div>
+            <div class="s-cmd"><pre>{rpCliCmd}</pre>{@render copyBtn(rpCliCmd, 'rpcli')}</div>
+            <p class="faint small">Arduino IDE: Sketch → Export Compiled Binary makes the same folder.</p>
+          </li>
+        {:else}
+          <li>
+            <div class="s-label">Upload the .uf2 your build made</div>
+            <div class="s-cmd"><pre>{rpOtherCmd}</pre>{@render copyBtn(rpOtherCmd, 'rpother')}</div>
+            <p class="faint small">pico-sdk: the .uf2 in <span class="mono">build/</span>. Any UF2 for an RP2040 or RP2350 works; the chip comes from the file.</p>
+          </li>
+        {/if}
+      {:else if way === 'pio'}
         <li>
           <div class="s-label">Add an environment to platformio.ini</div>
           <div class="s-cmd"><pre>{ini}</pre>{@render copyBtn(ini, 'ini')}</div>
@@ -314,11 +366,16 @@ python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
             <tbody>
               <tr><td>While recording</td><td class="mono">custom_tracker_on_recording</td><td class="mono">--on-recording</td><td class="mono">ask · keep · stop · after · cancel</td></tr>
               <tr><td>While asleep</td><td class="mono">custom_tracker_when_asleep</td><td class="mono">--when-asleep</td><td class="mono">wait · always · cycle</td></tr>
-              <tr><td>Write everything</td><td class="mono">custom_tracker_full_flash = yes</td><td class="mono">--full-flash</td><td class="muted">also images already on the board</td></tr>
+              <tr><td>Write everything</td><td class="mono">custom_tracker_full_flash = yes</td><td class="mono">--full-flash</td><td class="muted">also what's already on the board</td></tr>
+              <tr><td>Power</td><td class="mono">custom_tracker_power</td><td class="mono">--power</td><td class="mono">usb · ppk2 <span class="muted plain">(default: ESP32 ppk2, RP usb)</span></td></tr>
             </tbody>
           </table>
         </div>
-        <p class="faint small">Images with the same checksum as the board's aren't written again: usually the bootloader and partition table, or all of it for an unchanged build.</p>
+        {#if board === 'rp'}
+          <p class="faint small">Sectors that already hold the same data aren't written again (picotool <span class="mono">--update</span>). Firmware without USB serial: hold BOOTSEL while plugging the board in. On USB power, the recording and asleep options don't apply.</p>
+        {:else}
+          <p class="faint small">Images with the same checksum as the board's aren't written again: usually the bootloader and partition table, or all of it for an unchanged build.</p>
+        {/if}
       </div>
     </details>
   </section>
@@ -342,7 +399,16 @@ python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
 <style>
   .top { padding-bottom: 12px; }
   .state { font-weight: 500; }
-  .ways { align-self: flex-start; flex-wrap: wrap; }
+  .board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-width: 460px; }
+  .board button { min-height: 42px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font-size: 14px; font-weight: 600; cursor: pointer; }
+  .board button:hover { border-color: var(--faint); }
+  .board button[aria-pressed='true'] { border: 2px solid var(--accent); background: var(--sel); color: var(--accent); }
+  .tabs { display: flex; flex-wrap: wrap; gap: 4px 18px; border-bottom: 1px solid var(--line); margin-top: -2px; }
+  .tabs button { padding: 6px 0 7px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--muted); font-size: 13px; cursor: pointer; }
+  .tabs button:hover { color: var(--text); }
+  .tabs button[aria-pressed='true'] { border-bottom-color: var(--accent); color: var(--text); font-weight: 600; }
+  .seg { flex-wrap: wrap; }
+  .plain { font-family: var(--font); }
   .seg.tiny button { padding: 3px 9px; font-size: 12px; }
   .addr { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--warn-bg); }
   .addr .input { min-height: 30px; width: 240px; max-width: 100%; font-family: var(--mono); font-size: 12px; }

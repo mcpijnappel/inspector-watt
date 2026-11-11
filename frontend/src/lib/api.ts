@@ -90,12 +90,16 @@ export type FlashJob = {
   power_cycled: boolean;
   meta: { project?: string; env?: string; version?: string; git?: string; host?: string; source?: string };
   chip: string;
+  /** Which backend flashed it: esp32 (esptool) or rp2 (picotool). */
+  family: 'esp32' | 'rp2' | string;
+  /** What powers the board: the PPK2 (woken / power-cycled for the flash) or its own USB (just plugged in). */
+  power: 'ppk2' | 'usb';
   /** The chip's MAC as esptool read it (hex, no colons): which board got flashed. */
   mac: string | null;
   /** Written even if already on the board (no --skip-flashed). */
   full_flash: boolean;
   /** skipped: already on the board, not written (null: not flashed yet). */
-  images: { offset: number; bytes: number; skipped: boolean | null }[];
+  images: { offset: number | null; bytes: number; skipped: boolean | null }[];
   bytes: number;
   /** PPK2 stream indices of the flash (live chart shading). */
   start_idx: number | null;

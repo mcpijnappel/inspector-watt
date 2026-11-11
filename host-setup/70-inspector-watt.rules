@@ -18,3 +18,9 @@ SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="1a86", ENV{ID_MODEL_ID}=="55d3", SYMLINK+=
 # (Arduino's HWCDC counts a merely enumerated port as connected at boot, which costs ~0.6 s awake per wake.)
 SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="1001", ENV{ID_MM_DEVICE_IGNORE}="1", ATTR{power/autosuspend_delay_ms}="0", ATTR{power/control}="auto"
 SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="303a", ENV{ID_MODEL_ID}=="1001", SYMLINK+="dut-usb", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+
+# An RP2040 / RP2350 board (Raspberry Pi USB IDs) as the DUT: its firmware's USB serial port (pico-sdk stdio_usb,
+# arduino-pico Serial) is the DUT's USB too. Flashing restarts it into its boot loader (BOOTSEL mode, 2e8a:0003 RP2040,
+# 2e8a:000f RP2350), which picotool talks to as a raw USB device: that needs access as well.
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="2e8a", SYMLINK+="dut-usb", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ENV{ID_MM_DEVICE_IGNORE}="1", TAG+="uaccess"

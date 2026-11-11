@@ -107,6 +107,57 @@ class Readers(Files):
         self.assertIn("firmware.bin (app partition)", out.getvalue())
 
 
+class Rp2(Files):
+    """RP2040 / RP2350: UF2 files from pico-sdk, arduino-cli and PlatformIO (arduino-pico)."""
+
+    def test_uf2_file_and_folder(self):
+        uf2 = pst_flash.bin_to_uf2(b"\x11" * 1000, "rp2040")
+        self.assertEqual((len(uf2), pst_flash.uf2_chip(uf2)), (4 * 512, "rp2040"))
+        path = self.write("build/rp2040.rp2040.seeed_xiao_rp2040/blink.ino.uf2", uf2)
+        for words in ([path], [os.path.dirname(path)]):
+            u = pst_flash.from_sources(words)
+            self.assertEqual((u.family, u.chip, [off for off, _, _ in u.images], u.meta["source"], u.meta["project"]),
+                             ("rp2", "rp2040", [None], "uf2", "blink"))
+        self.write("build/rp2040.rp2040.seeed_xiao_rp2040/other.uf2", uf2)
+        with self.assertRaisesRegex(pst_flash.UploadError, "2 .uf2 files"):
+            pst_flash.from_sources([os.path.dirname(path)])
+        self.assertEqual(pst_flash.uf2_chip(pst_flash.bin_to_uf2(b"x" * 300, "rp2350")), "rp2350")
+
+    def test_payload_and_dry_run(self):
+        path = self.write("blink.uf2", pst_flash.bin_to_uf2(b"\x22" * 600, "rp2040"))
+        u = pst_flash.from_sources([path])
+        p = u.payload(power="ppk2")
+        self.assertEqual((p["family"], p["chip"], p["power"], p["images"][0]["offset"]), ("rp2", "rp2040", "ppk2", None))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(pst_flash.main(["--dry-run", path]), 0)
+        self.assertIn("blink.uf2 (UF2, 1536 bytes)", out.getvalue())
+
+    def test_platformio_arduino_pico(self):
+        class Env:
+            def __init__(self, project):
+                self.project = project
+
+            def BoardConfig(self):
+                return {"build.mcu": "rp2040"}
+
+            def subst(self, s):
+                return {"$PROJECT_DIR": self.project, "$PIOENV": "xiao_rp2040"}.get(s, "")
+
+            def get(self, key, default=None):
+                return default
+        build = os.path.join(self.dir, ".pio", "build", "xiao_rp2040")
+        elf = self.write(".pio/build/xiao_rp2040/firmware.elf", b"ELF")
+        self.write(".pio/build/xiao_rp2040/firmware.bin", b"\x33" * 700)  # no .uf2: made from the .bin
+        u = pst_flash.from_platformio(Env(self.dir), [elf])
+        self.assertEqual((u.family, u.chip, u.images[0][2], u.meta["env"]), ("rp2", "rp2040", "firmware.bin", "xiao_rp2040"))
+        self.assertEqual(len(u.images[0][1]), 3 * 512)
+        uf2 = pst_flash.bin_to_uf2(b"\x44" * 300, "rp2040")
+        self.write(".pio/build/xiao_rp2040/firmware.uf2", uf2)  # the build's own UF2 wins
+        u = pst_flash.from_platformio(Env(self.dir), [os.path.join(build, "firmware.elf")])
+        self.assertEqual((u.images[0][1], u.images[0][2]), (uf2, "firmware.uf2"))
+
+
 class FakeTracker(BaseHTTPRequestHandler):
     """POST /api/flash -> a job; GET /api/flash/<id> -> done, with the first image already on the board."""
     received = []

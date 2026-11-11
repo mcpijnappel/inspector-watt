@@ -68,7 +68,8 @@ class ImageIn(BaseModel):
 
 
 class FlashIn(BaseModel):
-    """One upload. family picks the backend; the esp32 settings stay top-level (as uploads have always sent them)."""
+    """One upload. family picks the backend (esp32, rp2); the esp32 settings stay top-level (as uploads have always
+    sent them)."""
     family: str = "esp32"
     images: list[ImageIn] = Field(min_length=1, max_length=16)
     chip: str = ""  # "": from the images
@@ -79,6 +80,7 @@ class FlashIn(BaseModel):
     on_recording: str = "ask"
     when_asleep: str = ""
     full_flash: bool = False
+    power: str = ""  # ppk2 | usb; "": the family's default (esp32: ppk2, rp2: usb)
     meta: dict = {}
 
     def request(self) -> FlashRequest:
@@ -89,7 +91,7 @@ class FlashIn(BaseModel):
         options = {"flash_mode": self.flash_mode, "flash_freq": self.flash_freq, "flash_size": self.flash_size,
                    "app_only": self.app_only} if self.family == "esp32" else {}
         return FlashRequest(images, self.chip, self.family, options, self.meta, self.on_recording,
-                            self.when_asleep, self.full_flash)
+                            self.when_asleep, self.full_flash, self.power)
 
 
 class ChoiceIn(BaseModel):

@@ -277,8 +277,8 @@ them, add an ask rule such as `"ask": ["Bash(pio run *upload*)"]` to the firmwar
 ## Flashing firmware
 
 With the sensor's own USB port connected (5 V blocked, see [Requirements](#requirements)), a build on any
-machine on the network goes to the tracker, which flashes it with esptool (ESP32 chips for now). The PPK2
-keeps powering the sensor the whole time. Every way needs the **upload token**: Settings → Firmware upload
+machine on the network goes to the tracker, which flashes it with esptool (ESP32) or picotool (RP2040 /
+RP2350, [below](#rp2040--rp2350)). The PPK2 keeps powering an ESP32 sensor the whole time. Every way needs the **upload token**: Settings → Firmware upload
 shows it; put it in the environment variable `PST_FLASH_TOKEN` on the machine you upload from. Settings →
 Firmware upload also shows each setup below with this tracker's address filled in.
 
@@ -320,7 +320,7 @@ python pst_flash.py build/esp32.esp32.XIAO_ESP32C6/   # arduino-cli compile --ex
 python pst_flash.py firmware.merged.bin           # esptool merge-bin, espflash save-image --merge
 python pst_flash.py firmware.bin                  # an app image alone: placed like an OTA upload
 python pst_flash.py 0x0 boot.bin 0x8000 partitions.bin 0x10000 app.bin
-python pst_flash.py --help                        # --chip, --on-recording, --when-asleep, --full-flash, --dry-run
+python pst_flash.py --help                        # --chip, --on-recording, --when-asleep, --full-flash, --power, --dry-run
 ```
 The chip comes from the build or the image header. A merged image is split along its own partition table
 (bootloader, partition table, the partitions that hold data), so the erased gaps in it don't wipe the
@@ -364,6 +364,33 @@ including the power-cycle; the same build again ~3 s (nothing written); reading 
 backup) takes ~20 s; over OTA the same 1.8 MB app arrives in ~1 s on the LAN. Writing only changed sectors (esptool `--diff-with`) was tried and dropped: even a
 one-constant code change shifts almost the whole app (401 of ~444 sectors), so it saved nothing worth its
 cost.
+
+### RP2040 / RP2350
+
+A Raspberry Pi Pico, XIAO RP2040 or any RP2040 / RP2350 board flashes over its own USB with picotool (in the
+capture image). Its firmware needs USB serial (pico-sdk `stdio_usb`, arduino-pico `Serial`): the tracker
+opens that port at 1200 baud, which restarts the board into its USB boot loader (BOOTSEL mode); picotool
+then writes the UF2 (`--update`: sectors that already hold the same data aren't written), checks it and
+starts it. A board already in BOOTSEL mode (blank, or BOOTSEL held while plugging it in) is flashed straight
+away; firmware without USB serial needs that too.
+
+By default such a board is on **USB power** (a plain cable, not on the PPK2): the upload doesn't touch the
+PPK2, isn't asked about a running recording and doesn't mark it. Soldered to the PPK2 with the 5 V blocked
+like an ESP32 sensor, set `custom_tracker_power = ppk2` / `--power ppk2` and it's woken and power-cycled like
+one. Not measured on hardware yet.
+```ini
+[env:xiao_rp2040_tracker]
+extends = env:seeed_xiao_rp2040   ; arduino-pico (platform raspberrypi); a Pico: env:pico
+upload_protocol = custom
+extra_scripts = post:pst_flash.py
+custom_tracker_url = http://<tracker>:8080
+```
+```sh
+python pst_flash.py build/blink.uf2                                # pico-sdk, or any .uf2
+python pst_flash.py build/rp2040.rp2040.seeed_xiao_rp2040/         # arduino-cli compile --export-binaries
+```
+The udev rule gives RP boards `/dev/dut-usb` and lets the capture service reach them in BOOTSEL mode
+(`/dev/bus/usb`, mounted into the container): install it again after updating.
 
 ## Operations
 
