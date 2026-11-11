@@ -48,13 +48,16 @@ services:
       RAW_MANTISSA_BITS: ${RAW_MANTISSA_BITS:-12}  # raw precision; 23 = lossless (~40 % bigger)
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     # The whole host /dev is mounted (not just the device nodes), so the udev symlinks /dev/ppk2 and
-    # /dev/dut-uart keep working after a replug renumbers ttyACM*. The cgroup rule allows only
-    # USB CDC ACM serial devices (major 166).
+    # /dev/dut-uart keep working after a replug renumbers ttyACM*. The cgroup rules allow only USB CDC ACM
+    # serial devices (major 166) and raw USB devices (major 189: picotool flashing an RP2040/RP2350 in its
+    # boot loader; libusb looks for them under /dev/bus/usb, so that's mounted where it looks).
     volumes:
       - /dev:/host-dev:ro
+      - /dev/bus/usb:/dev/bus/usb:ro
       - ${DATA_DIR:-./data}:/data:z
     device_cgroup_rules:
       - "c 166:* rmw"
+      - "c 189:* rmw"
     security_opt:
       - label=disable  # SELinux: let the container open the host's tty devices
     depends_on:

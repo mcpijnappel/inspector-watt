@@ -161,6 +161,10 @@ class SimUsbDevice:
         self.flashed = 0  # simulated flashes (tests)
         self.mac = "9c:9e:6e:00:00:01"  # what simulated esptool reads from the chip
         self.flash: dict[int, bytes] = {0x8000: partition_table(SIM_PARTITIONS)}  # by offset, what's on the chip
+        # as an RP2040/RP2350 board (rp2 uploads): in BOOTSEL mode (boot loader) or not, and the last UF2 loaded
+        self.rp_chip = "rp2040"
+        self.bootsel = False
+        self.rp_flash: bytes | None = None
 
     def open(self):
         if not self.present:
@@ -168,6 +172,16 @@ class SimUsbDevice:
         return SimUsbSerial()
 
     def wake(self) -> None:
+        self.present = True
+
+    def enter_bootsel(self) -> None:
+        """The 1200-baud touch: the serial port goes away, the boot loader shows up."""
+        self.present = False
+        self.bootsel = True
+
+    def leave_bootsel(self) -> None:
+        """picotool --execute: the new firmware runs, with its serial port."""
+        self.bootsel = False
         self.present = True
 
 

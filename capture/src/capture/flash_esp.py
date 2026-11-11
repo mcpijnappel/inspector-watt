@@ -111,10 +111,15 @@ def find_app(images: list[Image]) -> bytes | None:
 
 class EspBackend:
     family = "esp32"
+    default_power = "ppk2"
+    missing = "the DUT's USB port isn't there: is the USB adapter plugged in?"
 
     def __init__(self, usb):
         self.usb = usb
         self.sim = usb.port.startswith("sim://")
+
+    def present(self) -> bool:
+        return self.usb.present()
 
     def check(self, req: FlashRequest) -> None:
         unknown = set(req.options) - set(OPTIONS)
