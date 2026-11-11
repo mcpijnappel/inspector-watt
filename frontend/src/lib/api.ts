@@ -507,6 +507,9 @@ export const api = {
   modules: () => req<ModuleInfo[]>('GET', '/api/modules'),
   setModuleSettings: (name: string, values: Record<string, unknown>) => req<Record<string, unknown>>('PUT', `/api/modules/${name}/settings`, values),
   /** A module's latest events (Live), after the last one seen. */
+  busChips: (deviceId: number) => req<Record<string, { name?: string; switch?: boolean }>>('GET', `/api/devices/${deviceId}/bus-chips`),
+  setBusChips: (deviceId: number, chips: Record<string, { name?: string; switch?: boolean }>) =>
+    req<Record<string, { name?: string; switch?: boolean }>>('PUT', `/api/devices/${deviceId}/bus-chips`, chips),
   moduleLiveEvents: <T>(name: string, afterSeq: number) => req<T[]>('GET', `/api/modules/${name}/events/live?after_seq=${afterSeq}&limit=2000`),
   /** The logic analyzer: decode the last seconds of its buffer (the transactions also land in the Live list). */
   analyzerDecode: <T>(seconds: number) => req<T>('POST', '/api/modules/analyzer/decode', { seconds }),

@@ -2,9 +2,11 @@
 // the Bus tab is on screen), and "decode the last seconds".
 
 import { api, type ModuleInfo } from './api';
+import type { Chip, Chips } from './busfold';
+import { devices } from './devices.svelte';
 import { live } from './live.svelte';
 
-const MAX_EVENTS = 2000;
+const MAX_EVENTS = 6000; // a decode sends up to 5000
 const POLL_MS = 1000;
 const MODULES_EVERY_MS = 30000;
 
@@ -33,6 +35,9 @@ class Bus {
   busy = $state(false);
   error = $state('');
   last = $state<DecodeResult | null>(null);
+  /** Chip names of the board on the bench (its id: chipsOf). */
+  chips = $state<Chips>({});
+  chipsOf = $state<number | null>(null);
 
   private seq = 0;
   private users = 0;
@@ -84,6 +89,28 @@ class Bus {
     } finally {
       this.busy = false;
     }
+  }
+
+  /** Load the chip names of the board on the bench, once per board. */
+  async loadChips() {
+    const id = devices.activeId;
+    if (id == null || id === this.chipsOf) return;
+    try {
+      this.chips = await api.busChips(id);
+      this.chipsOf = id;
+    } catch { /* shown as plain addresses */ }
+  }
+
+  /** Name a chip (empty name: forget it) or mark it as an I2C switch, for the board on the bench. */
+  async setChip(key: string, chip: Chip) {
+    const id = devices.activeId;
+    if (id == null) throw new Error('Pick the board on the bench first (top bar)');
+    const next = { ...this.chips };
+    const name = (chip.name ?? '').trim();
+    if (name || chip.switch != null) next[key] = { ...(name ? { name } : {}), ...(chip.switch != null ? { switch: chip.switch } : {}) };
+    else delete next[key];
+    this.chips = await api.setBusChips(id, next);
+    this.chipsOf = id;
   }
 
   clear() {
