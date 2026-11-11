@@ -815,6 +815,49 @@ async def delete_device(did: int):
     return {"deleted": did}
 
 
+CHIP_KEY = re.compile(r"^(m|[0-7]):([0-9]{1,3})$")
+
+
+class BusChip(BaseModel):
+    name: str = Field("", max_length=40)
+    switch: bool | None = None  # an I2C switch (TCA9548A-style): its writes open ports. None: guess from the traffic
+
+
+def check_bus_chips(chips: dict[str, BusChip]) -> dict:
+    """Keys are "<where>:<address>": m (main bus) or a switch port 0-7, and a 7-bit address."""
+    if len(chips) > 128:
+        raise HTTPException(422, "at most 128 chips")
+    out = {}
+    for key, c in chips.items():
+        m = CHIP_KEY.match(key)
+        if not m or not 0x03 <= int(m[2]) <= 0x77:
+            raise HTTPException(422, f"not a chip position: {key!r} (m:<address> or <port>:<address>, address 3-119)")
+        c = c.model_dump(exclude_none=True)
+        c["name"] = c["name"].strip()
+        if c["name"] or "switch" in c:
+            out[key] = c
+    return out
+
+
+@app.get("/api/devices/{did:int}/bus-chips")
+async def get_bus_chips(did: int):
+    r = await q_one("SELECT bus_chips FROM devices WHERE id = %s", (did,))
+    if r is None:
+        raise HTTPException(404, "device not found")
+    return r["bus_chips"]
+
+
+@app.put("/api/devices/{did:int}/bus-chips")
+async def put_bus_chips(did: int, body: dict[str, BusChip]):
+    """All of the board's chip names at once (the Bus tab sends the whole set)."""
+    chips = check_bus_chips(body)
+    r = await q_one("UPDATE devices SET bus_chips = %s, updated_at = now() WHERE id = %s RETURNING bus_chips",
+                    (Jsonb(chips), did))
+    if r is None:
+        raise HTTPException(404, "device not found")
+    return r["bus_chips"]
+
+
 @app.get("/api/devices/active")
 async def get_active_device():
     return await active_device()
