@@ -137,6 +137,11 @@ class Analyzer:
                     self.streamer = self.streamer_cls(self.driver, self.values["samplerate_hz"], dev.get("conn"))
                     self.streamer.start()
             elif not s.running and s.error:
+                # The stream broke (unplugged, or the analyzer came back on another USB address): look for it again
+                # next time instead of retrying the old address forever.
+                log.warning("stream failed (%s): scanning for the analyzer again", s.error)
+                s.stop()
+                self.streamer = None
                 self.error = s.error
 
     def run(self) -> None:
@@ -201,7 +206,7 @@ class Analyzer:
             return {"ok": True, "detail": f"{dev['description']} ({self.driver}), streaming at {s.rate / 1e6:g} MHz, "
                                           f"last {s.status()['buffered_s']:g} s kept"}
         if dev and not (s and s.running):
-            return {"ok": False, "detail": f"{dev['description']} found, not streaming: {(s and s.error) or 'starting'}"}
+            return {"ok": False, "detail": f"{dev['description']} found, not streaming: {(s and s.error) or self.error or 'starting'}"}
         return {"ok": False, "detail": self.error}
 
     def describe(self) -> dict:

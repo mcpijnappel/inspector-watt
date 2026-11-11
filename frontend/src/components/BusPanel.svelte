@@ -1,8 +1,8 @@
 <script lang="ts">
-  // The logic analyzer's decoded bus traffic on the Live page (a tab next to UART and USB). Messages are grouped
-  // per chip (behind an I2C switch: per port), shown as register reads and sets, and repeats fold into one row
-  // (lib/busfold.ts). Chip names belong to the board on the bench. Lanes under the chart come later.
-  import type { Snippet } from 'svelte';
+  // The logic analyzer's decoded bus traffic on the Live page, in a panel under the current chart (so the UART log
+  // stays visible next to it). Messages are grouped per chip (behind an I2C switch: per port), shown as register
+  // reads and sets, and repeats fold into one row (lib/busfold.ts). Chip names belong to the board on the bench.
+  // The row under the mouse is shaded on the chart. Height and folded state are kept in the browser.
   import { bus } from '../lib/bus.svelte';
   import { ax, chipStats, every, fold, hx, leaf, leaves, pollEvery, summary, switchesOf, toItems, type Item, type Node } from '../lib/busfold';
   import { devices } from '../lib/devices.svelte';
@@ -12,9 +12,14 @@
   import { outside } from '../lib/outside';
   import { place } from '../lib/place';
 
-  let { head }: { head?: Snippet } = $props();
+  const H_KEY = 'pst.bus.height', FOLD_KEY = 'pst.bus.folded';
+  const MIN_H = 100, MAX_H = 900;
+  const stored = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
+  const store = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private window */ } };
+  let height = $state(Math.min(MAX_H, Math.max(MIN_H, Number(stored(H_KEY)) || 280)));
+  let collapsed = $state(stored(FOLD_KEY) === '1');
 
-  $effect(() => bus.use());
+  $effect(() => (shut ? undefined : bus.use()));
   $effect(() => { void devices.activeId; void bus.loadChips(); });
 
   const MAX_ROWS = 2000, MAX_CHILDREN = 400;
@@ -26,6 +31,9 @@
   let stick = $state(true);
 
   const health = $derived(bus.analyzer?.module?.health);
+  // No analyzer to read (unplugged, starting): just the header bar with the reason, unless there's traffic to look at
+  const idle = $derived(!health?.ok && !bus.events.length);
+  const shut = $derived(collapsed || idle);
   const v = $derived(bus.analyzer?.values ?? {});
   const wiring = $derived([
     v.i2c_sda !== 'off' && v.i2c_scl !== 'off' ? `I2C on ${v.i2c_sda}/${v.i2c_scl}` : null,
@@ -64,6 +72,30 @@
   const toggle = (list: string[], x: string) => (list.includes(x) ? list.filter((y) => y !== x) : [...list, x]);
   const dim = (it: Item) => (it.kind === 'probe' && !it.ok) || it.kind === 'switch';
   const pct = (n: number) => Math.round((100 * n) / Math.max(1, total));
+
+  // height: drag the bar on top (or arrow keys on it)
+  function grab(e: PointerEvent) {
+    const el = e.currentTarget as HTMLElement, y0 = e.clientY, h0 = height;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => { height = Math.min(MAX_H, Math.max(MIN_H, h0 - (ev.clientY - y0))); };
+    const up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); store(H_KEY, String(Math.round(height))); };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+  }
+  function nudge(e: KeyboardEvent) {
+    const d = e.key === 'ArrowUp' ? 40 : e.key === 'ArrowDown' ? -40 : 0;
+    if (!d) return;
+    e.preventDefault();
+    height = Math.min(MAX_H, Math.max(MIN_H, height + d));
+    store(H_KEY, String(height));
+  }
+  // the row under the mouse: shaded on the chart
+  function hoverRow(e: Event) {
+    const r = (e.target as HTMLElement).closest<HTMLElement>('[data-a]');
+    if (!r) return;
+    const a = Number(r.dataset.a), b = Number(r.dataset.b);
+    if (bus.hover?.a !== a || bus.hover?.b !== b) bus.hover = { a, b, label: r.dataset.label ?? '' };
+  }
 
   // naming
   let editing = $state<{ key: string; addr: number; port: string | null } | null>(null);
@@ -110,7 +142,7 @@
 {/snippet}
 
 {#snippet line(it: Item)}
-  <div class="row" class:dim={dim(it)}>
+  <div class="row" class:dim={dim(it)} data-a={it.idx} data-b={it.idx} data-label={nameOf(it.key, it.addr)}>
     <span class="t"><span class="tw"></span>{clock(it.idx)}</span>
     {@render who(it)}
     <span class="what" class:bad={it.nack && it.kind !== 'probe'}>{@render step(it)}{#if it.nack && it.kind !== 'probe'} · refused (NACK){/if}</span>
@@ -128,7 +160,8 @@
     {@const isOpen = open.includes(id)}
     {@const span = its[its.length - 1].t - first.t}
     {@const poll = pollEvery(n)}
-    <button type="button" class="row grp" class:dim={dim(first)} aria-expanded={isOpen} onclick={() => (open = toggle(open, id))}>
+    <button type="button" class="row grp" class:dim={dim(first)} aria-expanded={isOpen} onclick={() => (open = toggle(open, id))}
+      data-a={first.idx} data-b={its[its.length - 1].idx} data-label={nameOf(first.key, first.addr)}>
       <span class="t"><span class="tw">{isOpen ? '▾' : '▸'}</span>{clock(first.idx)}</span>
       {@render who(first)}
       <span class="what">
@@ -191,64 +224,81 @@
   </span>
 {/snippet}
 
-<section class="panel log" aria-label="Bus traffic">
-  <div class="panel-head">
-    <h2>Serial log</h2>
-    {@render head?.()}
-    <span class="spacer"></span>
-    {#if bus.events.length}<button class="btn small ghost" type="button" onclick={() => { bus.clear(); open = []; }}>Clear</button>{/if}
-    <button class="btn small" type="button" disabled={bus.busy || !health?.ok} onclick={() => bus.decode(5)}
-      title={health?.ok ? 'Decode the last 5 seconds of the analyzer\'s buffer' : health?.detail ?? ''}>{bus.busy ? 'Decoding…' : 'Decode last 5 s'}</button>
-  </div>
-
-  <div class="note" class:bad={!health?.ok}>
-    <span class="dot" class:ok={health?.ok}></span>
-    <span>{health?.detail ?? 'Logic analyzer'} · {wiring} · <a href="#/settings/modules">settings</a></span>
-  </div>
-  {#if bus.error}<div class="note err">{bus.error}</div>{/if}
-  {#if bus.last}
-    <div class="note">Decoded {(bus.last.to - bus.last.from).toFixed(1)} s in {bus.last.decode_s} s: {bus.last.found} message{bus.last.found === 1 ? '' : 's'}{folded && bus.events.length ? ` → ${rows.length} row${rows.length === 1 ? '' : 's'}` : ''}{bus.last.truncated ? ' (only the first shown: a pin may be noisy, check the wiring)' : ''}</div>
+<section class="panel bus" class:collapsed={shut} aria-label="Bus traffic">
+  {#if !shut}
+    <button class="grip" type="button" aria-label="Height of the bus panel: drag, or arrow keys up and down" title="Drag to change the height"
+      onpointerdown={grab} onkeydown={nudge}></button>
   {/if}
+  <div class="panel-head">
+    {#if !idle}<button class="btn small ghost icon" type="button" aria-expanded={!collapsed} aria-label={collapsed ? 'Open the bus panel' : 'Fold the bus panel'}
+      title={collapsed ? 'Open' : 'Fold to this bar'} onclick={() => { collapsed = !collapsed; store(FOLD_KEY, collapsed ? '1' : '0'); }}>{collapsed ? '▸' : '▾'}</button>{/if}
+    <h2>Bus</h2>
+    <span class="state" title={health?.detail ?? ''}><span class="dot" class:ok={health?.ok} class:warn={!health?.ok}></span>{health?.ok ? wiring : health?.detail ?? 'starting'} · <a href="#/settings/modules">settings</a></span>
+    {#if collapsed && bus.events.length}<span class="faint small">{bus.events.length} messages</span>{/if}
+    <span class="spacer"></span>
+    {#if !collapsed && bus.events.length}<button class="btn small ghost" type="button" onclick={() => { bus.clear(); open = []; }}>Clear</button>{/if}
+    <div class="decode">
+      <button class="btn small" type="button" disabled={bus.busy || !health?.ok} onclick={() => { collapsed = false; void bus.decode(30); }}
+        title={health?.ok ? 'Decode everything the analyzer kept: the last 30 seconds' : health?.detail ?? ''}>{bus.busy ? 'Decoding…' : 'Decode last 30 s'}</button>
+      <button class="btn small ghost" type="button" disabled={bus.busy || !health?.ok} onclick={() => { collapsed = false; void bus.decode(5); }}
+        title="Decode only the last 5 seconds (quicker)">5 s</button>
+    </div>
+  </div>
 
-  {#if !bus.events.length}
-    <div class="closed">
-      <h3>Bus traffic</h3>
-      <p>I2C and SPI on the board's pins, decoded by the logic analyzer. <strong>Decode last 5 s</strong> looks at what just happened; during recordings each wake will be decoded by itself, and the transactions are kept with the session.</p>
-    </div>
-  {:else}
-    <div class="devs">
-      {#each mainChips as [key, s] (key)}
-        {#if !(key.startsWith('m:') && switches.has(s.addr ?? -1))}{@render chip(key, s.addr, null, s.n, s.ok)}{/if}
-      {/each}
-      {#each [...switches] as a (a)}
-        <span class="sw">
-          {@render chip(`m:${a}`, a, null, null, true)}
-          {#each portChips as [key, s] (key)}{@render chip(key, s.addr, s.port, s.n, s.ok)}{/each}
-        </span>
-      {/each}
-    </div>
-    <div class="opts">
-      <label class="opt"><input type="checkbox" bind:checked={folded} /> Fold loops and runs</label>
-      {#if switches.size}<label class="opt"><input type="checkbox" bind:checked={showSwitch} /> Show switch port writes</label>{/if}
-      {#if devices.activeId == null}<span class="hint">Pick the board on the bench to name chips</span>{/if}
-    </div>
-    <div class="lines mono" bind:this={box} {onscroll}>
-      {#each rows.slice(0, MAX_ROWS) as n, i (i)}{@render node(n)}{/each}
-      {#if rows.length > MAX_ROWS}<div class="more">… and {rows.length - MAX_ROWS} more rows</div>{/if}
-    </div>
+  {#if !shut}
+    {#if bus.error}<div class="note err">{bus.error}</div>{/if}
+
+    {#if !bus.events.length}
+      <div class="closed" style:height="{height}px">
+        <p>I2C and SPI on the board's pins, decoded by the logic analyzer. <strong>Decode last 30 s</strong> looks at what just happened; during recordings each wake will be decoded by itself, and the transactions are kept with the session.</p>
+      </div>
+    {:else}
+      <div class="bar">
+        <div class="devs">
+          {#each mainChips as [key, s] (key)}
+            {#if !(key.startsWith('m:') && switches.has(s.addr ?? -1))}{@render chip(key, s.addr, null, s.n, s.ok)}{/if}
+          {/each}
+          {#each [...switches] as a (a)}
+            <span class="sw">
+              {@render chip(`m:${a}`, a, null, null, true)}
+              {#each portChips as [key, s] (key)}{@render chip(key, s.addr, s.port, s.n, s.ok)}{/each}
+            </span>
+          {/each}
+        </div>
+        <div class="opts">
+          {#if bus.last}<span>{(bus.last.to - bus.last.from).toFixed(0)} s: {bus.last.found} messages{folded ? ` → ${rows.length} rows` : ''}{bus.last.truncated ? ' (cut off: a pin may be noisy, check the wiring)' : ''}</span>{/if}
+          <label class="opt"><input type="checkbox" bind:checked={folded} /> Fold loops and runs</label>
+          {#if switches.size}<label class="opt"><input type="checkbox" bind:checked={showSwitch} /> Switch port writes</label>{/if}
+          {#if devices.activeId == null}<span class="hint">Pick the board on the bench to name chips</span>{/if}
+        </div>
+      </div>
+      <!-- The shading on the chart is extra: hover, or focus a folded row with the keyboard -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="lines mono" style:height="{height}px" bind:this={box} {onscroll} onmouseover={hoverRow} onfocusin={hoverRow}
+        onmouseleave={() => (bus.hover = null)} onfocusout={() => (bus.hover = null)}>
+        {#each rows.slice(0, MAX_ROWS) as n, i (i)}{@render node(n)}{/each}
+        {#if rows.length > MAX_ROWS}<div class="more">… and {rows.length - MAX_ROWS} more rows</div>{/if}
+      </div>
+    {/if}
   {/if}
 </section>
 
 <style>
-  .log { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .bus { position: relative; display: flex; flex-direction: column; min-width: 0; }
+  .grip { position: absolute; left: 0; right: 0; top: 0; height: 9px; cursor: ns-resize; display: grid; place-items: center; z-index: 2; touch-action: none; border: 0; padding: 0; background: transparent; }
+  .grip::after { content: ''; width: 44px; height: 4px; border-radius: 2px; background: var(--line); }
+  .grip:hover::after, .grip:focus-visible::after { background: var(--accent); }
+  .grip:focus-visible { outline: none; }
+  .state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); min-width: 0; }
+  .small { font-size: 12px; }
+  .decode { display: inline-flex; gap: 4px; }
+  .bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; justify-content: space-between; padding: 7px 14px; border-bottom: 1px solid var(--line); }
   .note { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
-  .note.bad { background: var(--warn-bg); color: var(--text); }
   .note.err { color: var(--rec); }
-  .closed { flex: 1 1 0; display: flex; flex-direction: column; justify-content: center; gap: 10px; padding: 24px 22px; }
-  .closed h3 { margin: 0; font-size: 15px; }
+  .closed { display: flex; flex-direction: column; justify-content: center; gap: 10px; padding: 16px 22px; max-height: 160px; }
   .closed p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; max-width: 46ch; }
 
-  .devs { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 7px 14px; border-bottom: 1px solid var(--line); }
+  .devs { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-width: 0; }
   .anchor { position: relative; display: inline-flex; }
   .bchip { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; background: var(--panel2); font-size: 12px; line-height: 1.3; }
   .bchip.missing { border-style: dashed; background: transparent; }
@@ -269,11 +319,11 @@
   .actions { display: flex; gap: 8px; justify-content: flex-end; }
   .menu p { margin: 0; }
 
-  .opts { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; padding: 6px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .opts { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; font-size: 12px; color: var(--muted); }
   .opt { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
   .opt input { margin: 0; accent-color: var(--accent); }
 
-  .lines { flex: 1 1 0; min-height: 120px; overflow: auto; padding: 6px 0; font-size: 12px; line-height: 1.5; container-type: inline-size; }
+  .lines { flex: none; overflow: auto; padding: 6px 0; font-size: 12px; line-height: 1.5; container-type: inline-size; }
   .row { display: grid; grid-template-columns: auto minmax(70px, 130px) minmax(0, 1fr) auto; gap: 10px; padding: 1px 14px; align-items: baseline; width: 100%; text-align: left; }
   button.row { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
   button.row:hover { background: var(--panel2); }

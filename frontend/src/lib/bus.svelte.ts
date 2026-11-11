@@ -1,5 +1,5 @@
 // The logic analyzer module on the Live page: is it installed, its decoded bus transactions (polled only while
-// the Bus tab is on screen), and "decode the last seconds".
+// the Bus panel is open), "decode the last seconds", and the row the mouse is on (shaded on the chart).
 
 import { api, type ModuleInfo } from './api';
 import type { Chip, Chips } from './busfold';
@@ -9,6 +9,7 @@ import { live } from './live.svelte';
 const MAX_EVENTS = 6000; // a decode sends up to 5000
 const POLL_MS = 1000;
 const MODULES_EVERY_MS = 30000;
+const WAITING_EVERY_MS = 5000; // installed and on, but no analyzer streaming (yet)
 
 export type BusEvent = {
   seq: number;
@@ -38,26 +39,32 @@ class Bus {
   /** Chip names of the board on the bench (its id: chipsOf). */
   chips = $state<Chips>({});
   chipsOf = $state<number | null>(null);
+  /** The bus row under the mouse: its span in stream indexes and a label, shaded on the current chart. */
+  hover = $state<{ a: number; b: number; label: string } | null>(null);
 
   private seq = 0;
   private users = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
-  private modTimer: ReturnType<typeof setInterval> | undefined;
+  private modTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /** Look for the module now and then (the Live page decides from this whether to show the Bus tab). */
+  /** Look for the module now and then (the Live page decides from this whether to show the Bus panel); more often
+   * while it has no analyzer to read, so plugging one in shows within seconds. */
   watch() {
+    let stop = false;
     const load = async () => {
       try {
         const mods = await api.modules();
         this.analyzer = mods.find((m) => m.name === 'analyzer' && m.installed) ?? null;
       } catch { /* the api's own banner shows errors */ }
+      if (stop) return;
+      const waiting = this.analyzer != null && this.analyzer.values?.enabled !== false && !this.analyzer.module?.health?.ok;
+      this.modTimer = setTimeout(load, waiting ? WAITING_EVERY_MS : MODULES_EVERY_MS);
     };
     void load();
-    this.modTimer = setInterval(load, MODULES_EVERY_MS);
-    return () => clearInterval(this.modTimer);
+    return () => { stop = true; clearTimeout(this.modTimer); };
   }
 
-  /** The tab is on screen: poll new events until the returned cleanup. */
+  /** The panel is open: poll new events until the returned cleanup. */
   use() {
     if (this.users++ === 0) {
       void this.poll();
@@ -78,7 +85,7 @@ class Bus {
     } catch { /* not installed (any more) or not reachable: the tab says so */ }
   }
 
-  async decode(seconds = 5) {
+  async decode(seconds = 30) {
     this.busy = true;
     this.error = '';
     try {

@@ -89,7 +89,7 @@ class FakeStreamer:
     data = b""
 
     def __init__(self, driver, rate, conn=None):
-        self.rate, self.running, self.error = rate, False, None
+        self.rate, self.running, self.error, self.conn = rate, False, None, conn
         self.ring = Ring(len(self.data) + 10)
         self.timing = Timing(rate)
 
@@ -159,6 +159,22 @@ def test_settings_restart_the_stream_and_check_wiring():
     c.put("/settings", json={"enabled": False})
     assert a.streamer is None and c.get("/module").json()["health"]["detail"] == "switched off"
     assert c.post("/decode", json={"seconds": 1}).status_code == 409
+
+
+def test_a_broken_stream_scans_again():
+    # The analyzer re-enumerated on USB (new address): sigrok keeps failing on the old one until we scan again
+    devices = [{"driver": "fx2lafw", "conn": "3.30", "description": "FX2", "channels": []}]
+    c, a = module(devices, b"\x00" * 100)
+    a.scan_fn = lambda driver: devices
+    a.check()
+    old = a.streamer
+    assert old.conn == "3.30"
+    old.running, old.error = False, "No devices found."
+    devices[0] = {**devices[0], "conn": "3.64"}
+    a.check()
+    assert a.streamer is None and "No devices found" in c.get("/module").json()["health"]["detail"]
+    a.check()
+    assert a.streamer is not old and a.streamer.conn == "3.64" and a.streamer.running
 
 
 def test_no_analyzer():
