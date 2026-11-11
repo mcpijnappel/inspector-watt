@@ -1,8 +1,8 @@
 <script lang="ts">
   // Firmware upload: the DUT's USB port and the last uploads first; then how to set each build system up to flash
-  // through the tracker, per board (ESP32: PlatformIO, PlatformIO over Arduino OTA, ESP-IDF, other; RP2040/RP2350:
-  // PlatformIO, arduino-cli, pico-sdk/other), starting with the upload token; last, what happens when an upload
-  // comes in while the DUT sleeps.
+  // through the tracker, per board (ESP32: PlatformIO, PlatformIO over Arduino OTA, arduino-cli, ESP-IDF, other;
+  // RP2040/RP2350: PlatformIO, arduino-cli, pico-sdk/other), starting with the upload token; last, what happens
+  // when an upload comes in while the DUT sleeps.
   import { api, type FlashJob } from '../../lib/api';
   import { copyText } from '../../lib/copy';
   import { devPath, fmtClock } from '../../lib/format';
@@ -14,7 +14,8 @@
   type Asleep = 'wait' | 'always' | 'cycle';
   const BOARDS: { id: Board; label: string }[] = [{ id: 'esp', label: 'ESP32' }, { id: 'rp', label: 'RP2040 / RP2350' }];
   const WAYS: Record<Board, { id: Way; label: string }[]> = {
-    esp: [{ id: 'pio', label: 'PlatformIO' }, { id: 'ota', label: 'PlatformIO OTA' }, { id: 'idf', label: 'ESP-IDF' }, { id: 'other', label: 'Other' }],
+    esp: [{ id: 'pio', label: 'PlatformIO' }, { id: 'ota', label: 'PlatformIO OTA' }, { id: 'cli', label: 'Arduino / arduino-cli' },
+      { id: 'idf', label: 'ESP-IDF' }, { id: 'other', label: 'Other' }],
     rp: [{ id: 'pio', label: 'PlatformIO' }, { id: 'cli', label: 'Arduino / arduino-cli' }, { id: 'other', label: 'pico-sdk / other' }],
   };
   const BOARD_KEY = 'pst.firmware.board';
@@ -73,10 +74,11 @@ upload_flags =
   const idfCmd = $derived(`idf.py build
 python pst_flash.py --url ${url} build/`);
   const otherCmd = $derived(`${os === 'sh' ? 'export PST_URL=' : '$env:PST_URL="'}${url}${os === 'sh' ? '' : '"'}
-python pst_flash.py build/esp32.esp32.XIAO_ESP32C6/   # arduino-cli compile --export-binaries
 python pst_flash.py firmware.merged.bin              # esptool merge-bin, espflash
 python pst_flash.py firmware.bin                     # an app image alone
 python pst_flash.py 0x0 boot.bin 0x10000 app.bin`);
+  const espCliCmd = $derived(`arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32C6 --export-binaries
+python pst_flash.py --url ${url} build/esp32.esp32.XIAO_ESP32C6/`);
   const upload = 'pio run -e xiao_c6_tracker -t upload';
   const otaUpload = 'pio run -e xiao_c6_ota -t upload';
   const rpIni = $derived(`[env:xiao_rp2040_tracker]
@@ -341,6 +343,12 @@ python pst_flash.py build/blink.uf2`);
           <div class="s-cmd"><code>{otaUpload}</code>{@render copyBtn(otaUpload, 'otaup')}</div>
           {#if otaPort === null}<p class="warnline small">The OTA endpoint is switched off on this tracker (<span class="mono">OTA_PORT=0</span>).</p>{/if}
           <p class="faint small">Only the app goes over (UDP {otaPort ?? 3232}, local network only); your PC must accept the tracker's connection back. A running recording is asked about here, not in the terminal.</p>
+        </li>
+      {:else if way === 'cli'}
+        <li>
+          <div class="s-label">Build and upload</div>
+          <div class="s-cmd"><pre>{espCliCmd}</pre>{@render copyBtn(espCliCmd, 'espcli')}</div>
+          <p class="faint small">Arduino IDE: Sketch → Export Compiled Binary makes the same folder. Its merged image is split along the partition table, so the board keeps its saved settings (NVS).</p>
         </li>
       {:else if way === 'idf'}
         <li>
