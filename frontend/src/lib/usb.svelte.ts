@@ -13,12 +13,12 @@ export const risky = (label: string) => /clear|reset|erase|factory|format|wipe/i
 
 export type ConsoleLine = UartLine & { sent?: boolean; note?: boolean };
 
-export type LogTab = 'uart' | 'usb' | 'bus';
+export type LogTab = 'uart' | 'usb';
 
 function loadTab(): LogTab {
   try {
     const t = localStorage.getItem(TAB_KEY);
-    return t === 'usb' || t === 'bus' ? t : 'uart';
+    return t === 'usb' ? t : 'uart';
   } catch {
     return 'uart';
   }
@@ -26,7 +26,7 @@ function loadTab(): LogTab {
 
 class UsbConsole {
   lines = $state.raw<ConsoleLine[]>([]);
-  /** Which log the Live page shows (bus: the logic analyzer's decoded traffic). */
+  /** Which log the Live page shows. */
   tab = $state<LogTab>(loadTab());
   error = $state('');
   busy = $state(false);
