@@ -1,5 +1,5 @@
 <script lang="ts">
-  // System health: the services, the PPK2 stream, UART, the DUT's USB, live buffer and recording. Live from the status poll.
+  // System health: the services, the PPK2 stream, UART, the board's USB, live buffer and recording. Live from the status poll.
   import { api, type Health } from '../../lib/api';
   import { devPath, fmtBytes, fmtClock, fmtDuration } from '../../lib/format';
   import { live } from '../../lib/live.svelte';
@@ -76,7 +76,7 @@
       ])}
     {/if}
     {#if u}
-      {@render card('UART (DUT serial)', [
+      {@render card('UART (board serial)', [
         ['Port', devPath(u.port)],
         ['Connected', u.connected ? 'yes' : `no${u.error ? ` (${u.error})` : ''}`, u.connected ? 'ok' : 'bad'],
         ['Baud', String(u.baud)],
@@ -86,8 +86,8 @@
     {#if usb}
       {@render card('USB port (console, flashing)', [
         ['Port', devPath(usb.port)],
-        ['There now', usb.present ? 'yes (DUT awake)' : 'no (asleep, off or unplugged)', usb.present ? 'ok' : ''],
-        ['Console', usb.held ? 'held by a flash' : usb.wanted ? (usb.connected ? 'open: the DUT can\'t deep-sleep' : 'open, waiting for the DUT') : 'closed', usb.wanted || usb.held ? 'warn' : ''],
+        ['There now', usb.present ? 'yes (board awake)' : 'no (asleep, off or unplugged)', usb.present ? 'ok' : ''],
+        ['Console', usb.held ? 'held by a flash' : usb.wanted ? (usb.connected ? 'open: the board can\'t deep-sleep' : 'open, waiting for the board') : 'closed', usb.wanted || usb.held ? 'warn' : ''],
         ['Menu waiting', usb.menu ? usb.menu.title : 'no', usb.menu ? 'warn' : ''],
         ['Error', usb.error ?? 'none', usb.error ? 'bad' : ''],
         ['Lines received', n(usb.lines)],
@@ -98,7 +98,7 @@
     {#if st}
       {@render card('Live buffer & power', [
         ['Live buffer', `${fmtDuration(bufS)} of ${fmtDuration(capS)}`],
-        ['DUT power', p?.dut_power == null ? 'unknown (after a restart)' : p.dut_power ? 'on' : 'off'],
+        ['Board power', p?.dut_power == null ? 'unknown (after a restart)' : p.dut_power ? 'on' : 'off'],
         ['Idle power-off', st.idle_power_off.after_s ? `after ${fmtDuration(st.idle_power_off.after_s)}${st.idle_power_off.in_s != null ? ` · in ${fmtDuration(st.idle_power_off.in_s)}` : ''}` : 'off'],
         ['Recording', st.session?.active && st.session.session ? `#${st.session.session.id} ${st.session.session.name} · ${fmtDuration(st.session.session.duration_s)}` : 'no'],
       ])}

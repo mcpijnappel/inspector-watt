@@ -34,7 +34,7 @@ def keep_dtr_on_close(ser) -> None:
     """Don't drop DTR when the port closes (clear HUPCL).
 
     Measured on the bench: when DTR drops after the port has been open for a while (e.g. this service
-    restarting), the PPK2 sometimes switches its output off, so the DUT loses power and cold-boots.
+    restarting), the PPK2 sometimes switches its output off, so the board loses power and cold-boots.
     With DTR kept high the output stayed on in every trial. The setting sticks to the tty, so it also
     covers the close that happens when the process exits.
     """
@@ -112,7 +112,7 @@ class PPK2Manager:
         self.voltage_mv: int | None = None
         self.voltage_set_by_us = False
         self.dut_power: bool | None = None  # unknown until we set it
-        self.dut_changed: dict | None = None  # last DUT power change: {"on", "by": user|session|idle|limit, "at": unix time}
+        self.dut_changed: dict | None = None  # last board power change: {"on", "by": user|session|idle|limit, "at": unix time}
         self.device: dict | None = None  # the device on the bench: {"id", "name", "max_mv"} (its voltage limit)
 
     # lifecycle -------------------------------------------------------------------------------------------
@@ -282,10 +282,10 @@ class PPK2Manager:
             raise DeviceError(f"voltage must be {VDD_MIN_MV}-{self.max_mv} mV ({who})")
 
     def set_device(self, device: dict | None) -> None:
-        """A device (and so a voltage limit) was picked. If the DUT is powered above the new limit, it goes off."""
+        """A device (and so a voltage limit) was picked. If the board is powered above the new limit, it goes off."""
         self.device = device
         if self.dut_power and self.voltage_mv is not None and self.voltage_mv > self.max_mv:
-            log.warning("DUT at %d mV is above the new limit (%d mV): switching it off", self.voltage_mv, self.max_mv)
+            log.warning("Board at %d mV is above the new limit (%d mV): switching it off", self.voltage_mv, self.max_mv)
             try:
                 self.set_dut_power(False, by="limit")
             except DeviceError:
@@ -328,7 +328,7 @@ class PPK2Manager:
         with self._cmd_lock:
             link = self._require_link()
             if on and not self.voltage_set_by_us:
-                raise DeviceError("set the source voltage first, so the DUT never powers up at an unexpected voltage")
+                raise DeviceError("set the source voltage first, so the board never powers up at an unexpected voltage")
             link.set_dut_power(on)
             self.dut_power = on
             self.dut_changed = {"on": on, "by": by, "at": time.time()}
@@ -479,7 +479,7 @@ class CaptureService:
         self.usb = UsbManager(cfg.usb_port, SimUsbDevice() if cfg.usb_port.startswith("sim://") else None)
 
         self.idle = IdlePowerOff(self.ppk2, cfg.idle_power_off_s)
-        # Firmware uploads to a sleeping DUT: wait for its next wake (power-cycle after wake_wait_s), always wait
+        # Firmware uploads to a sleeping board: wait for its next wake (power-cycle after wake_wait_s), always wait
         # (never power-cycle), or power-cycle right away.
         self.flash_when_asleep = "wait"
         self.flash_wake_wait_s = 90.0
@@ -529,8 +529,8 @@ class CaptureService:
 
 
 class IdlePowerOff:
-    """Switches the DUT off when nothing records and no browser has looked for `after_s` seconds, so a forgotten
-    DUT doesn't keep running and opening the app never finds it powered without a deliberate action."""
+    """Switches the board off when nothing records and no browser has looked for `after_s` seconds, so a forgotten
+    board doesn't keep running and opening the app never finds it powered without a deliberate action."""
 
     CHECK_S = 10.0
 
@@ -546,7 +546,7 @@ class IdlePowerOff:
         self._last_viewer = time.monotonic()
 
     def remaining_s(self) -> float | None:
-        """Seconds until the DUT is switched off, or None if it won't be (disabled, off already, recording)."""
+        """Seconds until the board is switched off, or None if it won't be (disabled, off already, recording)."""
         if self.after_s <= 0 or self.ppk2.dut_power is False or not self.ppk2.connected or self.busy():
             return None
         return max(0.0, self.after_s - (time.monotonic() - self._last_viewer))
@@ -563,7 +563,7 @@ class IdlePowerOff:
                 continue
             try:
                 self.ppk2.set_dut_power(False, by="idle")
-                log.info("DUT switched off: nothing recording and no viewer for %d s", self.after_s)
+                log.info("Board switched off: nothing recording and no viewer for %d s", self.after_s)
             except DeviceError as e:
                 log.warning("idle power-off failed: %s", e)
 

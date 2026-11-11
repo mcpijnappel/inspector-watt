@@ -476,7 +476,7 @@
       <div class="kpi">
         <div class="label">Cycles</div><div class="value">{phasesRes.cycles.length}</div>
         <div class="sub">{#if wakeTypes.length}{wakeTypes.map((v) => `${v.instances.length} ${v.name}`).join(' · ')}{:else}{allStats.usable} complete · {fmtSpan(allStats.duration_s.mean ?? 0)} · {fmtCharge(allStats.charge_c.mean)} each{/if}</div>
-        {#if wokenBy.length}<div class="sub" title="What woke the DUT, from its log (phase profile: wake reason line)">woken by: {wokenBy.map(([r, n]) => `${n} ${r}`).join(' · ')}</div>{/if}
+        {#if wokenBy.length}<div class="sub" title="What woke the board, from its log (phase profile: wake reason line)">woken by: {wokenBy.map(([r, n]) => `${n} ${r}`).join(' · ')}</div>{/if}
       </div>
       {:else}
       <div class="kpi">
@@ -500,7 +500,7 @@
       {/if}
       <div class="kpi"><div class="label">Data</div><div class="value">{gapCount} {gapCount === 1 ? 'gap' : 'gaps'}</div>
         {#if resets.count}
-          <button type="button" class="resets" title="Unexpected resets of the DUT (not deep-sleep wakes or power-ons by the tracker). Click: show the first one."
+          <button type="button" class="resets" title="Unexpected resets of the board (not deep-sleep wakes or power-ons by the tracker). Click: show the first one."
             onclick={() => showReset(resets.groups.reduce((a, g) => Math.min(a, g.first_t), Infinity))}>
             <span class="value bad">{resets.count} {resets.count === 1 ? 'reset' : 'resets'}</span>
             <span class="sub bad">{resets.groups.slice(0, 3).map(resetText).join(' · ')}{resets.groups.length > 3 ? ` · +${resets.groups.length - 3} more` : ''}</span>

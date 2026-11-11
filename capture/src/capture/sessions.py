@@ -2,7 +2,7 @@
 
 Recovery rules:
 - PPK2 replugged during a session: the stream resumes on the same timeline (gap event), and with
-  auto_restore the session voltage + DUT power are set again (dut_restore event).
+  auto_restore the session voltage + board power are set again (dut_restore event).
 - Capture service restarted during a session: the session continues where the wall clock says it is
   (gap event for the downtime); same auto_restore behaviour.
 """
@@ -28,7 +28,7 @@ from .store import Store, StoreUnavailable
 log = logging.getLogger(__name__)
 
 TICK_S = 0.5
-# After a restart/stall: the DUT counts as still powered when it draws more than this on average.
+# After a restart/stall: the board counts as still powered when it draws more than this on average.
 # The PPK2 reads ~0.1-0.2 uA with the output off.
 DUT_ALIVE_A = 1e-6
 ALIVE_CHECK_SAMPLES = 50_000  # 0.5 s
@@ -256,8 +256,8 @@ class SessionManager:
         threading.Thread(target=self._handle_ppk2_resume, args=(gap_start, gap_samples, reason), daemon=True).start()
 
     def _dut_still_powered(self, rec: SessionRecorder) -> float | None:
-        """Mean current (A) if the PPK2 still supplies the session voltage and the DUT draws current, else None.
-        Then nothing needs to be restored, and re-sending the commands would only reboot the DUT."""
+        """Mean current (A) if the PPK2 still supplies the session voltage and the board draws current, else None.
+        Then nothing needs to be restored, and re-sending the commands would only reboot the board."""
         ppk2 = self.svc.ppk2
         mv = self._wanted_mv(rec)
         tolerance = BATTERY_KEEP_MV if rec.cfg.battery else 0
@@ -285,7 +285,7 @@ class SessionManager:
             mv = self.svc.ppk2.voltage_mv  # what the PPK2 really outputs (a battery session adjusts it next tick)
             self.svc.ppk2.adopt_source_state(mv, dut_power=True)
             rec.note("dut_kept", self.svc.ring.end, voltage_mv=mv, mean_a=mean)
-            log.info("session %d: DUT still powered (%.1f uA), not restoring", rec.session_id, mean * 1e6)
+            log.info("session %d: Board still powered (%.1f uA), not restoring", rec.session_id, mean * 1e6)
         else:
             self._power_up(rec, "dut_restore")
 
@@ -434,7 +434,7 @@ class SessionManager:
         if st.done:
             reason = "cutoff" if bat.on_cutoff == "protect" else "floor"
             a.rec.note("battery_end", idx, voltage_mv=st.voltage_mv, soc=st.soc, reason=reason)
-            log.info("session %d: emulated battery reached the %s (%d mV); DUT off", a.id, reason, st.voltage_mv)
+            log.info("session %d: emulated battery reached the %s (%d mV); board off", a.id, reason, st.voltage_mv)
             try:
                 self.stop_session(dut_off=True)
             except SessionError:

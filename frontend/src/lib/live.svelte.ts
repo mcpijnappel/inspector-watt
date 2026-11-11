@@ -273,7 +273,7 @@ class LiveStore {
     this.gen = st.buffer.generation;
     const end = st.buffer.end_idx;
     const start = Math.max(st.buffer.start_idx, end - Math.round(this.windowS / PERIOD));
-    // Paused before anything was loaded (opened while the DUT is off): show the last data, frozen.
+    // Paused before anything was loaded (opened while the board is off): show the last data, frozen.
     const frozenEmpty = this.paused && !this.x.length;
     if ((!this.paused || frozenEmpty) && end - start > 100) {
       const w = await api.window(start, end, POINTS);

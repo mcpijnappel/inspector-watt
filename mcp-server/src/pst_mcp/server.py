@@ -17,15 +17,15 @@ from .client import Api, ApiError
 from .hardware import HW_ANNOTATIONS, HW_META, Hardware
 
 INSTRUCTIONS = """\
-Inspector Watt: a Nordic PPK2 measures the current of a device under test (DUT, e.g. a XIAO ESP32-C6) at
+Inspector Watt: a Nordic PPK2 measures the current of a board (the device under test, e.g. a XIAO ESP32-C6) at
 100 kS/s while its serial (UART) log is recorded alongside. Use these tools to analyse recordings and the live
 measurement.
 
-Hardware (DUT power, voltage, measuring, recording, the DUT's USB console) only when the user has switched on
+Hardware (board power, voltage, measuring, recording, the board's USB console) only when the user has switched on
 "Hardware control" in the tracker (Settings → Agents); otherwise those tools don't exist and you ask the user.
 The first hardware call of a session waits until the user allows this session in the tracker's web UI (tell
-them to look there), and Claude Code asks them before every call. The DUT's USB console: while it's open the
-DUT can't deep-sleep, so close it when done. Firmware is flashed with PlatformIO, never through MCP.
+them to look there), and Claude Code asks them before every call. The board's USB console: while it's open the
+board can't deep-sleep, so close it when done. Firmware is flashed with PlatformIO, never through MCP.
 
 Units: current in A (1e-3 = 1 mA, 1e-6 = 1 µA), charge in C (3.6 C = 1 mAh), time in seconds. Times in a
 session are seconds since the session started (start_s/end_s); wall-clock times are ISO 8601.
@@ -43,7 +43,7 @@ Concepts:
   its end phase ("stretch", e.g. Connect + upload). "must" / "exclude" keep only cycles with / without some phases;
   "woken_by" keeps only cycles with a wake reason (Timer, an interrupt, ...).
   "All wakes" is every cycle. A cycle is "complete" (used in averages) when it ended and has no data gaps.
-- wake reason: what woke the DUT, from the firmware's log line (profile's wake_pattern).
+- wake reason: what woke the board, from the firmware's log line (profile's wake_pattern).
 - unexpected resets: every reset in the serial log except deep-sleep wakes and power-ons the tracker caused
   (brownout, watchdog, crash, software reset e.g. after an update, power lost); get_session groups them.
 - battery life uses the real mix of complete wakes; what-ifs change sleep time, drop phases or change how
@@ -119,7 +119,7 @@ async def list_sessions(
 @mcp.tool()
 async def get_session(session_id: SessionId) -> dict:
     """One session: settings (voltage, kind, battery emulation, ...), device, notes, event counts, stored data,
-    unexpected DUT resets (grouped by kind and the log line before them), and per cycle type how many cycles it
+    unexpected board resets (grouped by kind and the log line before them), and per cycle type how many cycles it
     has and what woke them."""
     s = await api.get(f"/api/sessions/{session_id}")
     out = {k: s.get(k) for k in ("id", "name", "kind", "status", "started_at", "stopped_at", "duration_s", "avg_current_a",
@@ -177,10 +177,10 @@ async def list_events(
     start_s: StartS = None, end_s: EndS = None,
     limit: Annotated[int, Field(ge=1, le=2000)] = 100,
 ) -> dict:
-    """Events recorded during a session: wakes (current above the wake threshold), data gaps, unexpected DUT
+    """Events recorded during a session: wakes (current above the wake threshold), data gaps, unexpected board
     resets (from the serial log: brownout, watchdog, crash, software reset, power lost; with the log line before
     it), firmware flashes by the tracker (data: project, version, git, host, result; resets during them are
-    expected), battery-emulation voltage steps, DUT power changes, ..."""
+    expected), battery-emulation voltage steps, board power changes, ..."""
     ev = await api.get(f"/api/sessions/{session_id}/events", kind=kind, start_s=start_s, end_s=end_s, limit=limit + 1)
     return {"events": ev[:limit], "more": len(ev) > limit}
 
@@ -225,7 +225,7 @@ async def battery_life(
 # live ------------------------------------------------------------------------------------------------------------
 @mcp.tool()
 async def live_status() -> dict:
-    """Right now: PPK2 (connected, measuring, DUT power, voltage, limit), the device on the bench, UART, and the
+    """Right now: PPK2 (connected, measuring, board power, voltage, limit), the device on the bench, UART, and the
     session being recorded (if any)."""
     st = await api.get("/api/device/status")
     p = st.get("ppk2", {})
@@ -250,7 +250,7 @@ def usb_brief(u: dict | None) -> dict | None:
         return None
     return {"present": u.get("present"), "console_open": u.get("wanted"), "flashing": u.get("held"),
             "menu": u.get("menu"), "error": u.get("error"),
-            "note": "present = the DUT is awake (the port disappears in deep sleep); while the console is open the DUT "
+            "note": "present = the board is awake (the port disappears in deep sleep); while the console is open the board "
                     "can't deep-sleep"}
 
 
@@ -356,7 +356,7 @@ async def save_profile(
     name: Annotated[str | None, Field(description="Name (required for a new profile)")] = None,
     rules: Annotated[list[Rule] | None, Field(description="All phase rules, in order (replaces them)")] = None,
     types: Annotated[list[CycleType] | None, Field(description="All cycle types (replaces them)")] = None,
-    wake_pattern: Annotated[str | None, Field(description="Regex for the log line saying what woke the DUT; its first "
+    wake_pattern: Annotated[str | None, Field(description="Regex for the log line saying what woke the board; its first "
                                                           "group is the reason. Empty string = the default")] = None,
     link_session_id: Annotated[int | None, Field(description="Also make this session use the profile")] = None,
 ) -> dict:
@@ -382,12 +382,12 @@ async def save_profile(
     return {"profile": p, "linked_session": link_session_id}
 
 
-# the DUT's USB console and firmware uploads (read-only) ---------------------------------------------------------
+# the board's USB console and firmware uploads (read-only) ---------------------------------------------------------
 @mcp.tool()
 async def usb_console_lines(
     last: Annotated[int, Field(ge=1, le=1000, description="How many of the newest lines")] = 100,
 ) -> dict:
-    """The newest lines from the DUT's own USB console (only while it was open; it repeats the UART log), and a
+    """The newest lines from the board's own USB console (only while it was open; it repeats the UART log), and a
     key menu the firmware is waiting on, if any."""
     st = await api.get("/api/device/status")
     u = st.get("usb") or {}
@@ -401,7 +401,7 @@ async def list_uploads(
     job_id: Annotated[int | None, Field(description="One upload, with its esptool log")] = None,
 ) -> dict:
     """Firmware uploads from PlatformIO through the tracker since it started (newest first): what, from where,
-    result, how long, whether the DUT was power-cycled or a recording marked. With job_id: that upload's log."""
+    result, how long, whether the board was power-cycled or a recording marked. With job_id: that upload's log."""
     if job_id is not None:
         j = await api.get(f"/api/flash/{job_id}")
         return {**flash_brief(j), "log": j.get("log", [])}
@@ -426,12 +426,12 @@ def _power_brief(st: dict) -> dict:
 
 @_hw_tool()
 async def dut_power(
-    on: Annotated[bool, Field(description="true = power the DUT, false = switch it off")],
+    on: Annotated[bool, Field(description="true = power the board, false = switch it off")],
     voltage_mv: Annotated[int | None, Field(ge=800, le=5000, description="Voltage to power it at (default: the device's "
                                                                           "voltage, or the one set now)")] = None,
     ctx: Context | None = None,
 ) -> dict:
-    """Switch the DUT's power (the PPK2 output) on or off. On: sets the voltage first (never above the device's
+    """Switch the board's power (the PPK2 output) on or off. On: sets the voltage first (never above the device's
     limit) and starts measuring if needed. Off doesn't stop a recording."""
     async def act():
         st = await _status()
@@ -456,10 +456,10 @@ async def dut_power(
 
 @_hw_tool()
 async def power_cycle(
-    off_s: Annotated[float, Field(ge=0.2, le=30, description="How long the DUT stays off, in seconds")] = 1.0,
+    off_s: Annotated[float, Field(ge=0.2, le=30, description="How long the board stays off, in seconds")] = 1.0,
     ctx: Context | None = None,
 ) -> dict:
-    """Switch the DUT off, wait, and switch it on again: a cold boot at the voltage set now (e.g. to restart the
+    """Switch the board off, wait, and switch it on again: a cold boot at the voltage set now (e.g. to restart the
     firmware, or to see a full boot in the log). A running recording keeps going and marks both switches, so the
     boot doesn't count as an unexpected reset."""
     async def act():
@@ -481,7 +481,7 @@ async def set_voltage(
     voltage_mv: Annotated[int, Field(ge=800, le=5000, description="New PPK2 output voltage (the device's limit applies)")],
     ctx: Context | None = None,
 ) -> dict:
-    """Change the DUT's supply voltage (the PPK2 output). A running battery-emulation recording sets it by itself."""
+    """Change the board's supply voltage (the PPK2 output). A running battery-emulation recording sets it by itself."""
     async def act():
         await api.hardware("POST", "/api/device/ppk2/source", {"voltage_mv": voltage_mv})
         return _power_brief(await _status())
@@ -493,7 +493,7 @@ async def measuring(
     on: Annotated[bool, Field(description="true = the PPK2 streams current, false = stop measuring")],
     ctx: Context | None = None,
 ) -> dict:
-    """Start or stop measuring (the PPK2 stream). Recording needs it on; the DUT's power doesn't change."""
+    """Start or stop measuring (the PPK2 stream). Recording needs it on; the board's power doesn't change."""
     async def act():
         await api.hardware("POST", "/api/device/ppk2/stream", {"on": on})
         return _power_brief(await _status())
@@ -511,7 +511,7 @@ async def start_recording(
     ctx: Context | None = None,
 ) -> dict:
     """Start a recording with the last recording's settings (like the web UI's Record), changing only what you
-    give. Powers the DUT at the session voltage."""
+    give. Powers the board at the session voltage."""
     args = {"name": name, "kind": kind, "voltage_mv": voltage_mv, "max_duration_s": max_duration_s}
 
     async def act():
@@ -530,7 +530,7 @@ async def start_recording(
 
 @_hw_tool()
 async def stop_recording(
-    dut_off: Annotated[bool, Field(description="Also switch the DUT off")] = False,
+    dut_off: Annotated[bool, Field(description="Also switch the board off")] = False,
     ctx: Context | None = None,
 ) -> dict:
     """Stop the running recording (it's kept; see get_session)."""
@@ -566,10 +566,10 @@ async def _usb_after(n_before: int, wait_s: float = 1.5) -> dict:
 
 @_hw_tool()
 async def usb_console(
-    open: Annotated[bool, Field(description="true = open the DUT's USB console, false = close it")],
+    open: Annotated[bool, Field(description="true = open the board's USB console, false = close it")],
     ctx: Context | None = None,
 ) -> dict:
-    """Open or close the DUT's own USB console. Open: the firmware sees USB, shows its debug menu on the next boot
+    """Open or close the board's own USB console. Open: the firmware sees USB, shows its debug menu on the next boot
     and can't deep-sleep (this changes the current you measure). Close it when done."""
     async def act():
         n = ((await _status()).get("usb") or {}).get("lines") or 0
@@ -583,7 +583,7 @@ async def usb_key(
     key: Annotated[str, Field(min_length=1, max_length=8, description="The key, e.g. 'n' from the menu's [n]")],
     ctx: Context | None = None,
 ) -> dict:
-    """Answer a key menu on the DUT's USB console (e.g. its debug menu): sends the key alone. Returns the lines
+    """Answer a key menu on the board's USB console (e.g. its debug menu): sends the key alone. Returns the lines
     that followed."""
     async def act():
         n = ((await _status()).get("usb") or {}).get("lines") or 0
@@ -597,7 +597,7 @@ async def usb_send(
     text: Annotated[str, Field(min_length=1, max_length=500, description="A line to send (a newline is added)")],
     ctx: Context | None = None,
 ) -> dict:
-    """Send a line to the DUT over its USB console (it must be open). Returns the lines that followed."""
+    """Send a line to the board over its USB console (it must be open). Returns the lines that followed."""
     async def act():
         n = ((await _status()).get("usb") or {}).get("lines") or 0
         await api.hardware("POST", "/api/device/usb/send", {"text": text, "eol": "\n"})

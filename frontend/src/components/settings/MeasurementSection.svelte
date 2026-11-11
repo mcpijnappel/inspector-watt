@@ -60,8 +60,8 @@
       <form class="item" onsubmit={saveIdle}>
         <div class="txt">
           <strong>Idle power-off</strong>
-          <span class="muted small">Switch the DUT off when nothing records and no browser is open for this long. 0 = never.</span>
-          <span class="faint small">{m.idle_power_off_s === 0 ? 'Off.' : idleIn != null ? `Would switch off in ${fmtDuration(idleIn)} if nobody watches.` : 'Not counting now (DUT off, or recording).'}{saved === 'idle' ? ' Saved.' : ''}</span>
+          <span class="muted small">Switch the board off when nothing records and no browser is open for this long. 0 = never.</span>
+          <span class="faint small">{m.idle_power_off_s === 0 ? 'Off.' : idleIn != null ? `Would switch off in ${fmtDuration(idleIn)} if nobody watches.` : 'Not counting now (board off, or recording).'}{saved === 'idle' ? ' Saved.' : ''}</span>
         </div>
         <span class="input-unit"><input type="text" inputmode="decimal" bind:value={idleMin} aria-label="Idle power-off in minutes" size="4" /><span class="muted">min</span></span>
         <button class="btn small" type="submit" disabled={!idleChanged}>Save</button>

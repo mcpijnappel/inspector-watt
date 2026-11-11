@@ -1,4 +1,4 @@
-"""DUT debug UART: line splitting, timestamping and a thread-safe log of recent lines."""
+"""Board debug UART: line splitting, timestamping and a thread-safe log of recent lines."""
 
 from __future__ import annotations
 

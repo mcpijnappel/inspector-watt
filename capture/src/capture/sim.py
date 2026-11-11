@@ -153,7 +153,7 @@ def partition_table(parts) -> bytes:
 
 
 class SimUsbDevice:
-    """The DUT's USB port in the simulator. `present` is False while it 'sleeps' (tests set it); the tracker's
+    """The board's USB port in the simulator. `present` is False while it 'sleeps' (tests set it); the tracker's
     power-cycle wakes it, like a real boot."""
 
     def __init__(self):

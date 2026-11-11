@@ -53,7 +53,7 @@ class Cycle:
     wake: str | None = None  # what woke it, from the firmware's log (see wake_pattern)
 
 
-# What woke the DUT: the first log line in a cycle matching the profile's wake pattern (its first group).
+# What woke the board: the first log line in a cycle matching the profile's wake pattern (its first group).
 DEFAULT_WAKE_PATTERN = r"[Ww]ake(?:[ -]?up)? (?:source|reason)\s*:\s*(.+)"
 
 

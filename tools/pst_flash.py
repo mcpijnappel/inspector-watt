@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pst_flash.py: upload firmware through Inspector Watt. The tracker flashes the DUT over its own USB port: an ESP32
+"""pst_flash.py: upload firmware through Inspector Watt. The tracker flashes the board over its own USB port: an ESP32
 while the PPK2 keeps powering it (and wakes it first if it's asleep), an RP2040/RP2350 with picotool (by default on
 USB power, without touching the PPK2). One file, Python 3.8+, standard library only.
 
@@ -411,7 +411,7 @@ def send(upload, url, token, on_recording="ask", when_asleep="", full_flash=Fals
         sys.stderr.write(f"Flash {job['status']}: {job.get('error') or ''}\n")
         return 1
     skipped = sum(1 for im in job.get("images", []) if im.get("skipped"))
-    print(f"Flashed{' (DUT power-cycled first)' if job.get('power_cycled') else ''}"
+    print(f"Flashed{' (board power-cycled first)' if job.get('power_cycled') else ''}"
           + (f", marked in recording {job['session_id']}" if job.get("session_id") else "")
           + (f"; {skipped} of {len(job['images'])} image(s) already on the board, not written" if skipped else ""))
     return 0
@@ -421,7 +421,7 @@ def send(upload, url, token, on_recording="ask", when_asleep="", full_flash=Fals
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="pst_flash.py", formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Upload firmware through Inspector Watt (the tracker flashes the DUT over its own USB port).",
+        description="Upload firmware through Inspector Watt (the tracker flashes the board over its own USB port).",
         epilog="SOURCE: an ESP-IDF build folder or its flasher_args.json, a folder with a *.merged.bin or a *.uf2, a\n"
                "merged or app .bin, a .uf2 (RP2040/RP2350), or offset/file pairs (0x0 boot.bin 0x10000 app.bin).\n"
                "PST_URL and PST_FLASH_TOKEN (the tracker's upload token) come from the environment.")

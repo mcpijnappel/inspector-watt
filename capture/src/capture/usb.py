@@ -1,9 +1,9 @@
-"""The DUT's own USB serial port (ESP32 USB-Serial/JTAG), next to the PPK2 and the debug UART.
+"""The board's own USB serial port (ESP32 USB-Serial/JTAG), next to the PPK2 and the debug UART.
 
-It is connected through an adapter that blocks the 5 V, so the PPK2 keeps powering the DUT. The port is kept
+It is connected through an adapter that blocks the 5 V, so the PPK2 keeps powering the board. The port is kept
 closed unless someone asks for it: the firmware counts USB as connected only while the host has the port open and
 reads it. Closed, the firmware behaves as if nothing is plugged in (no debug menu, deep sleep allowed). Open, it
-shows its debug menu at boot and doesn't deep-sleep, and the port vanishes whenever the DUT sleeps or resets.
+shows its debug menu at boot and doesn't deep-sleep, and the port vanishes whenever the board sleeps or resets.
 
 Opening keeps DTR and RTS as the kernel sets them (both on). Clearing them one after the other passes through
 RTS on + DTR off, which resets the chip.
@@ -93,7 +93,7 @@ class UsbManager:
         self._close()
 
     def present(self) -> bool:
-        """The port exists: the DUT is powered and awake (it disappears in deep sleep)."""
+        """The port exists: the board is powered and awake (it disappears in deep sleep)."""
         if self.port.startswith("sim://"):
             return self.sim_factory is not None and self.sim_factory.present
         return os.path.exists(self.port)
@@ -134,24 +134,24 @@ class UsbManager:
                         self.connected = True
                         self.opened_at = time.time()
                         self.error = None
-                    log.info("DUT USB opened on %s", self.port)
+                    log.info("Board USB opened on %s", self.port)
                 except Exception as e:  # vanished again, busy, no permission, ...
                     if self.error != str(e):
-                        log.warning("DUT USB not available: %s", e)
+                        log.warning("Board USB not available: %s", e)
                     self.error = str(e)
                     self._stop.wait(POLL_S)
                 continue
             if not self.wanted or self.held:
                 self._close()
-                log.info("DUT USB closed")
+                log.info("Board USB closed")
                 continue
             try:
                 data = self._ser.read(1)
                 if data and self._ser.in_waiting:
                     data += self._ser.read(self._ser.in_waiting)
             except (serial.SerialException, OSError) as e:
-                # Normal: the DUT went to sleep or reset. Reopened as soon as it's back.
-                log.info("DUT USB gone: %s", e)
+                # Normal: the board went to sleep or reset. Reopened as soon as it's back.
+                log.info("Board USB gone: %s", e)
                 self._close()
                 continue
             now = time.monotonic()
@@ -178,7 +178,7 @@ class UsbManager:
     def send(self, text: str, eol: str = "\n") -> int:
         with self._lock:
             if self._ser is None:
-                raise UsbError("DUT USB is not open" + (" (flashing)" if self.held else ""))
+                raise UsbError("Board USB is not open" + (" (flashing)" if self.held else ""))
             n = self._ser.write((text + eol).encode())
         self.menu.clear()
         return n
