@@ -412,8 +412,24 @@ export type AgentState = { hardware: boolean; lan: boolean; pending: AgentReques
 export type AgentAction = { id: number; at: string; session: string; client: string | null; host: string | null; tool: string; args: Record<string, unknown>; result: 'ok' | 'error' | 'denied'; detail: string | null };
 
 export type McpToken = { id: number; name: string; token: string; created: string | null };
-export type McpStatus = { lan: boolean; hardware: boolean; tokens: McpToken[]; server: { up: boolean; error?: string; tools?: { name: string; description: string }[] } };
+export type McpStatus = { lan: boolean; hardware: boolean; library: boolean; tokens: McpToken[]; server: { up: boolean; error?: string; tools?: { name: string; description: string }[] } };
 export type Health = { db: boolean; capture: boolean; mcp: boolean };
+
+/** Sensor library: how a chip talks on I2C (see api/src/api/chips.py) */
+export type ChipValue = { name: string; unit?: string; expr: string };
+export type ChipRegister = { addr: number; name: string; rw?: 'r' | 'w' | 'rw'; about?: string; fields?: string; bytes?: number; values?: ChipValue[] };
+export type ChipCommand = { code: number; name: string; reply?: number; wait_ms?: number; about?: string; values?: ChipValue[] };
+/** One bus a chip talks on, with that bus's settings and its own register or command table. */
+export type ChipBus = {
+  bus: 'i2c' | 'spi';
+  addresses?: number[]; ports?: number; // I2C
+  read_bit?: number; read_when_set?: boolean; inc_bit?: number; mode?: number; max_hz?: number; // SPI
+  style?: 'registers' | 'commands' | 'switch' | 'basic'; reg_bytes?: 1 | 2; byte_order?: 'big' | 'little';
+  registers?: ChipRegister[]; commands?: ChipCommand[]; bank?: { reg: number; mask: number; about?: string };
+};
+export type ChipTable = { name: string; vendor?: string; kind?: string; buses: ChipBus[]; datasheet?: string; notes?: string };
+export type Chip = { id: number; name: string; body: ChipTable; source: 'built-in' | 'you' | 'agent'; agent: string | null; checked: boolean; updated_at: string; boards: string[] };
+export type BoardChip = { name?: string; type?: string; switch?: boolean };
 
 /** now / min / avg / max over the chosen period */
 export type Mmm = { now: number; min: number; avg: number; max: number };
@@ -523,15 +539,20 @@ export const api = {
   modules: () => req<ModuleInfo[]>('GET', '/api/modules'),
   setModuleSettings: (name: string, values: Record<string, unknown>) => req<Record<string, unknown>>('PUT', `/api/modules/${name}/settings`, values),
   /** A module's latest events (Live), after the last one seen. */
-  busChips: (deviceId: number) => req<Record<string, { name?: string; switch?: boolean }>>('GET', `/api/devices/${deviceId}/bus-chips`),
-  setBusChips: (deviceId: number, chips: Record<string, { name?: string; switch?: boolean }>) =>
-    req<Record<string, { name?: string; switch?: boolean }>>('PUT', `/api/devices/${deviceId}/bus-chips`, chips),
+  busChips: (deviceId: number) => req<Record<string, BoardChip>>('GET', `/api/devices/${deviceId}/bus-chips`),
+  setBusChips: (deviceId: number, chips: Record<string, BoardChip>) => req<Record<string, BoardChip>>('PUT', `/api/devices/${deviceId}/bus-chips`, chips),
+  chips: () => req<Chip[]>('GET', '/api/chips'),
+  createChip: (t: ChipTable) => req<Chip>('POST', '/api/chips', t),
+  updateChip: (id: number, t: ChipTable) => req<Chip>('PUT', `/api/chips/${id}`, t),
+  checkChip: (id: number, checked: boolean) => req<Chip>('POST', `/api/chips/${id}/check?checked=${checked}`),
+  deleteChip: (id: number) => req<{ deleted: number; boards: string[] }>('DELETE', `/api/chips/${id}`),
   moduleLiveEvents: <T>(name: string, afterSeq: number) => req<T[]>('GET', `/api/modules/${name}/events/live?after_seq=${afterSeq}&limit=2000`),
   /** The logic analyzer: decode the last seconds of its buffer (the transactions also land in the Live list). */
   analyzerDecode: <T>(seconds: number) => req<T>('POST', '/api/modules/analyzer/decode', { seconds }),
   mcp: () => req<McpStatus>('GET', '/api/mcp'),
   setMcpLan: (lan: boolean) => req<McpStatus>('PUT', '/api/mcp', { lan }),
   setMcpHardware: (hardware: boolean) => req<McpStatus>('PUT', '/api/mcp', { hardware }),
+  setMcpLibrary: (library: boolean) => req<McpStatus>('PUT', '/api/mcp', { library }),
   agents: () => req<AgentState>('GET', '/api/agents'),
   agentAnswer: (id: number, allow: boolean) => req<AgentRequest>('POST', `/api/agents/requests/${id}/answer`, { allow }),
   agentRevoke: (session: string | null = null) => req<{ revoked: number }>('POST', '/api/agents/revoke', { session }),

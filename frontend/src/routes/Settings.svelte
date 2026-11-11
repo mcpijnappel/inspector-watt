@@ -4,6 +4,7 @@
   import DevicesSection from '../components/settings/DevicesSection.svelte';
   import FirmwareSection from '../components/settings/FirmwareSection.svelte';
   import HealthSection from '../components/settings/HealthSection.svelte';
+  import LibrarySection from '../components/settings/LibrarySection.svelte';
   import MeasurementSection from '../components/settings/MeasurementSection.svelte';
   import ModulesSection from '../components/settings/ModulesSection.svelte';
   import ProfilesSection from '../components/settings/ProfilesSection.svelte';
@@ -13,7 +14,7 @@
   let { section }: { section?: string } = $props();
 
   const SECTIONS = [
-    { id: 'devices', label: 'Devices', hint: 'Boards on the bench, voltage limits' },
+    { id: 'devices', label: 'Devices & sensors', hint: 'Boards, their chips, the sensor library' },
     { id: 'profiles', label: 'Phase profiles', hint: 'Phase rules, cycle types, record presets' },
     { id: 'measurement', label: 'Measurement & safety', hint: 'Idle power-off, spike filter, batteries' },
     { id: 'firmware', label: 'Firmware upload', hint: 'Upload status, token, build setup' },
@@ -23,6 +24,9 @@
     { id: 'health', label: 'System health', hint: 'PPK2 stream, UART, services' },
   ] as const;
   const KEY = 'pst.settings.section';
+  // Sub-pages: #/settings/library is the Sensor library tab of "Devices & sensors"
+  const SUB: Record<string, string> = { library: 'devices' };
+  const known = (id: string | null | undefined) => !!id && (SECTIONS.some((s) => s.id === id) || id in SUB);
 
   function remembered(): string {
     try {
@@ -31,10 +35,11 @@
       return 'devices';
     }
   }
-  const current = $derived(SECTIONS.some((s) => s.id === section) ? section! : SECTIONS.some((s) => s.id === remembered()) ? remembered() : 'devices');
+  const page = $derived(known(section) ? section! : known(remembered()) ? remembered() : 'devices');
+  const current = $derived(SUB[page] ?? page);
   $effect(() => {
     try {
-      localStorage.setItem(KEY, current);
+      localStorage.setItem(KEY, page);
     } catch { /* storage blocked */ }
   });
 </script>
@@ -54,7 +59,12 @@
       </ul>
     </nav>
     <main class="content settings">
-      {#if current === 'devices'}<DevicesSection />
+      {#if current === 'devices'}
+        <div class="subtabs" role="tablist" aria-label="Devices and sensors">
+          <a role="tab" href="#/settings/devices" aria-selected={page === 'devices'}>Boards</a>
+          <a role="tab" href="#/settings/library" aria-selected={page === 'library'}>Sensor library</a>
+        </div>
+        {#if page === 'library'}<LibrarySection />{:else}<DevicesSection />{/if}
       {:else if current === 'profiles'}<ProfilesSection />
       {:else if current === 'measurement'}<MeasurementSection />
       {:else if current === 'firmware'}<FirmwareSection />
@@ -78,6 +88,10 @@
   a.on .lbl { color: var(--accent); }
   .lbl { font-weight: 600; font-size: 14px; }
   .phone { display: none; width: 100%; }
+  .subtabs { display: flex; gap: 4px 20px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+  .subtabs a { flex-direction: row; padding: 6px 0 8px; border-radius: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; color: var(--muted); font-size: 14px; }
+  .subtabs a:hover { background: none; color: var(--text); }
+  .subtabs a[aria-selected='true'] { border-bottom-color: var(--accent); color: var(--text); font-weight: 600; }
   .content { min-width: 0; }
   @media (max-width: 760px) {
     .page { padding: 12px; }

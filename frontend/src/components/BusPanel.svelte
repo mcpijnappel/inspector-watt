@@ -5,9 +5,11 @@
   // The row under the mouse is shaded on the chart. Height and folded state are kept in the browser.
   import { bus } from '../lib/bus.svelte';
   import { ax, chipStats, every, fold, hx, leaf, leaves, pollEvery, summary, switchesOf, toItems, type Item, type Node } from '../lib/busfold';
+  import type { Chip, ChipValue } from '../lib/api';
+  import { library, onBus } from '../lib/chips.svelte';
   import { devices } from '../lib/devices.svelte';
   import { fmtClock } from '../lib/format';
-  import { suggestions } from '../lib/i2cchips';
+  import { evaluate, fmtValue } from '../lib/formula';
   import { live } from '../lib/live.svelte';
   import { outside } from '../lib/outside';
   import { place } from '../lib/place';
@@ -21,6 +23,7 @@
 
   $effect(() => (shut ? undefined : bus.use()));
   $effect(() => { void devices.activeId; void bus.loadChips(); });
+  $effect(() => library.ensure());
 
   const MAX_ROWS = 2000, MAX_CHILDREN = 400;
   let folded = $state(true);
@@ -41,14 +44,22 @@
   ].filter(Boolean).join(' · ') || 'no bus wired up');
 
   const msPerIdx = $derived((live.status?.buffer?.sample_period_s ?? 1e-5) * 1000);
-  const switches = $derived(switchesOf(bus.events, bus.chips));
-  const allItems = $derived(toItems(bus.events, switches, msPerIdx, showSwitch));
-  const stats = $derived(chipStats(toItems(bus.events, switches, msPerIdx, false)));
+  const switches = $derived(switchesOf(bus.events, bus.chips, library.switchTypes));
+  // the board's SPI chip: with a table from the library its transfers read as register reads and writes
+  const spiFormat = $derived(onBus(library.get(bus.chips.spi?.type), 'spi') as { read_bit: number } | undefined);
+  const allItems = $derived(toItems(bus.events, switches, msPerIdx, showSwitch, spiFormat));
+  const stats = $derived(chipStats(toItems(bus.events, switches, msPerIdx, false, spiFormat)));
   const shown = $derived(allItems.filter((it) => !hidden.includes(it.key)));
   const rows = $derived<Node[]>(folded ? fold(shown) : shown.map((it) => ({ it })));
   const total = $derived([...stats.values()].reduce((s, c) => s + c.n, 0));
-  const mainChips = $derived([...stats].filter(([k]) => k.startsWith('m:') || k === 'spi').sort((a, b) => b[1].n - a[1].n));
-  const portChips = $derived([...stats].filter(([k]) => !k.startsWith('m:') && k !== 'spi').sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })));
+  type Stat = { n: number; ok: boolean; addr: number | null; port: string | null; missing?: boolean };
+  // The board's chips that weren't in this decode: shown as "not seen" (it may be asleep, or not answering).
+  const expected = $derived<[string, Stat][]>(bus.events.length ? Object.keys(bus.chips)
+    .filter((k) => !stats.has(k) && !(k.startsWith('m:') && switches.has(Number(k.split(':')[1]))))
+    .map((k) => { const [p, a] = k.split(':'); return [k, { n: 0, ok: false, addr: k === 'spi' ? null : Number(a), port: p === 'm' || k === 'spi' ? null : p, missing: true }]; }) : []);
+  const allStats = $derived<[string, Stat][]>([...stats, ...expected]);
+  const mainChips = $derived(allStats.filter(([k]) => k.startsWith('m:') || k === 'spi').sort((a, b) => b[1].n - a[1].n));
+  const portChips = $derived(allStats.filter(([k]) => !k.startsWith('m:') && k !== 'spi').sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })));
 
   $effect(() => {
     void rows.length;
@@ -65,9 +76,39 @@
     const names = new Set(Object.entries(bus.chips).filter(([k]) => /^[0-7]:/.test(k) && Number(k.split(':')[1]) === addr).map(([, c]) => c.name));
     return names.size === 1 ? [...names][0] : undefined;
   };
+  /** The chip type from the sensor library (for a port that isn't known: the type the port chips there share). */
+  const typeOf = (key: string, addr: number | null): Chip | undefined => {
+    if (key.startsWith('?:')) {
+      const types = new Set(Object.entries(bus.chips).filter(([k]) => /^[0-7]:/.test(k) && Number(k.split(':')[1]) === addr).map(([, c]) => c.type));
+      return types.size === 1 ? library.get([...types][0]) : undefined;
+    }
+    return library.get(bus.chips[key]?.type);
+  };
   const nameOf = (key: string, addr: number | null) =>
-    bus.chips[key]?.name || (key.startsWith('?:') ? sharedName(addr) : undefined) ||
+    bus.chips[key]?.name || (key.startsWith('?:') ? sharedName(addr) : undefined) || typeOf(key, addr)?.name ||
     (key.startsWith('m:') && switches.has(addr ?? -1) ? 'I2C switch' : key === 'spi' ? 'SPI' : ax(addr ?? 0));
+  /** What the library knows about this message: the register's or command's name, and readings from its bytes. */
+  function known(it: Item): { name?: string; values: string[] } {
+    // the chip's table for the bus this message was on
+    const t = onBus(typeOf(it.key, it.addr), it.key === 'spi' ? 'spi' : 'i2c');
+    if (!t) return { values: [] };
+    const read = (vals: ChipValue[] | undefined, bytes: number[] | undefined) => (vals ?? []).flatMap((v) => {
+      const x = bytes ? evaluate(v.expr, bytes) : null;
+      return x == null ? [] : [`${fmtValue(x)}${v.unit ? ` ${v.unit}` : ''}`];
+    });
+    if ((it.kind === 'reg' || it.kind === 'set') && t.registers) {
+      // on SPI only the address bits go over the wire (BME280: 0xF7 is sent as 0x77 / 0xF7): compare those
+      const mask = t.bus === 'spi' ? 0xff & ~(t.read_bit ?? 0x80) & ~(t.inc_bit ?? 0) : 0xffff;
+      const r = t.registers.find((x) => (x.addr & mask) === it.reg?.[0]);
+      return { name: r?.name, values: it.kind === 'reg' ? read(r?.values, it.r) : [] };
+    }
+    if ((it.kind === 'cmd' || it.kind === 'write') && t.commands) {
+      const c = t.commands.find((x) => x.code === it.w?.[0]);
+      return { name: c?.name, values: it.kind === 'cmd' ? read(c?.values, it.r) : [] };
+    }
+    return { values: [] };
+  }
+  const nameIn = (it: Item) => known(it).name;
   const idOf = (n: Node) => `${'loop' in n ? 'L' : 'R'}${leaf(n).key}@${leaf(n).idx}`;
   const toggle = (list: string[], x: string) => (list.includes(x) ? list.filter((y) => y !== x) : [...list, x]);
   const dim = (it: Item) => (it.kind === 'probe' && !it.ok) || it.kind === 'switch';
@@ -98,21 +139,25 @@
   }
 
   // naming
-  let editing = $state<{ key: string; addr: number; port: string | null } | null>(null);
+  let editing = $state<{ key: string; addr: number | null; port: string | null } | null>(null);
   let draft = $state('');
+  let draftType = $state('');
   let draftSwitch = $state(false);
   let saveError = $state('');
-  function edit(key: string, addr: number, port: string | null) {
+  function edit(key: string, addr: number | null, port: string | null) {
     editing = { key, addr, port };
     draft = bus.chips[key]?.name ?? '';
-    draftSwitch = switches.has(addr) && key.startsWith('m:');
+    draftType = bus.chips[key]?.type ?? '';
+    draftSwitch = addr != null && switches.has(addr) && key.startsWith('m:');
     saveError = '';
   }
   async function save(name = draft) {
     if (!editing) return;
-    const isSwitchAddr = editing.key.startsWith('m:') && editing.addr >= 0x70 && editing.addr <= 0x77;
+    const typed = library.get(draftType);
+    // a switch by its library type needs no flag; otherwise the checkbox says it (0x70-0x77 only)
+    const isSwitchAddr = editing.key.startsWith('m:') && editing.addr != null && editing.addr >= 0x70 && editing.addr <= 0x77 && !typed;
     try {
-      await bus.setChip(editing.key, { name, ...(isSwitchAddr ? { switch: draftSwitch } : {}) });
+      await bus.setChip(editing.key, { name, type: draftType || undefined, ...(isSwitchAddr ? { switch: draftSwitch } : {}) });
       editing = null;
     } catch (e) {
       saveError = (e as Error).message;
@@ -124,13 +169,18 @@
   <span class="who" title="{it.addr != null ? ax(it.addr) : 'SPI'}{it.port === '?' ? ' behind the switch: the decode started after its port was opened' : it.port != null ? ` on switch port ${it.port}` : ''}">{nameOf(it.key, it.addr)}{#if it.port != null}<span class="pn">{it.port}</span>{/if}</span>
 {/snippet}
 
+{#snippet named(code: number[] | undefined, name: string | undefined)}
+  {#if name}<span class="rn">{name}</span><span class="rx">{hx(code)}</span>{:else}<span class="w">{hx(code)}</span>{/if}
+{/snippet}
+
 {#snippet step(it: Item)}
+  {@const k = known(it)}
   {#if it.kind === 'switch'}{it.text}
   {:else if it.kind === 'probe'}{it.ok ? 'answers' : 'not found'}
-  {:else if it.kind === 'reg'}<span class="w">{hx(it.reg)}</span><span class="op">→</span>{hx(it.r)}
-  {:else if it.kind === 'set'}<span class="w">{hx(it.reg)}</span><span class="op">←</span><span class="w">{hx(it.w)}</span>
-  {:else if it.kind === 'cmd'}<span class="w">{hx(it.w)}</span><span class="op">→</span>{hx(it.r)}
-  {:else if it.kind === 'write'}write <span class="w">{hx(it.w)}</span>
+  {:else if it.kind === 'reg'}{@render named(it.reg, k.name)}<span class="op">→</span>{#if k.values.length}<span class="val">{k.values.join(' · ')}</span><span class="rx">{hx(it.r)}</span>{:else}{hx(it.r)}{/if}
+  {:else if it.kind === 'set'}{@render named(it.reg, k.name)}<span class="op">←</span><span class="w">{hx(it.w)}</span>
+  {:else if it.kind === 'cmd'}{@render named(it.w, k.name)}<span class="op">→</span>{#if k.values.length}<span class="val">{k.values.join(' · ')}</span><span class="rx">{hx(it.r)}</span>{:else}{hx(it.r)}{/if}
+  {:else if it.kind === 'write'}{#if k.name}<span class="rn">{k.name}</span><span class="rx">{hx(it.w)}</span>{:else}write <span class="w">{hx(it.w)}</span>{/if}
   {:else if it.kind === 'spi'}{#if it.mosi?.length}MOSI <span class="w">{hx(it.mosi)}</span>{/if}{#if it.mosi?.length && it.miso?.length}<span class="sep">·</span>{/if}{#if it.miso?.length}MISO {hx(it.miso)}{/if}
   {:else}read {hx(it.r)}{/if}
 {/snippet}
@@ -138,7 +188,7 @@
 {#snippet brief(n: Node)}
   {#if 'it' in n}{@render step(n.it)}
   {:else if 'loop' in n}({#each n.children.slice(-n.k).slice(0, 3) as c, i}{#if i}<span class="sep">·</span>{/if}{@render brief(c)}{/each}{n.k > 3 ? ` +${n.k - 3}` : ''}) ×{n.r}
-  {:else}{summary(leaves(n)).join(' · ')}{/if}
+  {:else}{summary(leaves(n), nameIn).join(' · ')}{/if}
 {/snippet}
 
 {#snippet line(it: Item)}
@@ -168,9 +218,9 @@
         {#if 'loop' in n && n.k <= 4}
           {#each n.children.slice(-n.k) as c, i}{#if i}<span class="sep">·</span>{/if}{@render brief(c)}{/each}
         {:else if 'loop' in n}
-          <span class="w">{leaves({ run: true, children: n.children.slice(-n.k) }).length} steps each</span><span class="sep">·</span>{summary(leaves({ run: true, children: n.children.slice(-n.k) })).join(' · ')}
+          <span class="w">{leaves({ run: true, children: n.children.slice(-n.k) }).length} steps each</span><span class="sep">·</span>{summary(leaves({ run: true, children: n.children.slice(-n.k) }), nameIn).join(' · ')}
         {:else}
-          <span class="w">{its.length} steps</span><span class="sep">·</span>{summary(its).join(' · ')}
+          <span class="w">{its.length} steps</span><span class="sep">·</span>{summary(its, nameIn).join(' · ')}
         {/if}
       </span>
       <span class="side">
@@ -197,23 +247,30 @@
         {#if port != null}<span class="pn">{port}</span>{:else}<span class="dot" class:ok></span>{/if}
         <span class="nm">{nameOf(key, addr)}</span>
         {#if addr != null && port == null && bus.chips[key]?.name}<span class="a">{ax(addr)}</span>{/if}
-        {#if n != null}<span class="n" class:hog={pct(n) >= 50}>{ok ? n : 'not found'}{ok && pct(n) >= 20 ? ` · ${pct(n)} %` : ''}</span>{/if}
+        {#if n != null}<span class="n" class:hog={pct(n) >= 50}>{n === 0 && !ok ? 'not seen' : ok ? n : 'not found'}{ok && pct(n) >= 20 ? ` · ${pct(n)} %` : ''}</span>{/if}
       </button>
-      {#if addr != null && port !== '?'}<button type="button" class="ed" title="Name this chip" aria-label="Name {ax(addr)}" onclick={() => edit(key, addr, port)}>✎</button>{/if}
+      {#if (addr != null || key === 'spi') && port !== '?'}<button type="button" class="ed" title="Name this chip" aria-label="Name {addr != null ? ax(addr) : 'the SPI chip'}" onclick={() => edit(key, addr, port)}>✎</button>{/if}
     </span>
     {#if editing?.key === key}
+      {@const a = editing.addr}
+      {@const fits = a == null ? library.spi : library.at(a)}
       <form class="popover menu" use:place use:outside={() => (editing = null)} onsubmit={(e) => { e.preventDefault(); void save(); }}>
-        <label class="field" for="chip-name">Name for {ax(editing.addr)} {editing.port != null ? `on switch port ${editing.port}` : 'on the main bus'}
-          <!-- svelte-ignore a11y_autofocus -->
-          <input id="chip-name" class="input" bind:value={draft} placeholder={ax(editing.addr)} maxlength="40" autofocus />
+        <p class="ttl">{a == null ? 'SPI chip on the analyzer\'s chip select' : `${ax(a)} ${editing.port != null ? `on switch port ${editing.port}` : 'on the main bus'}`}</p>
+        <label class="field" for="chip-type">Type, from the sensor library
+          <select id="chip-type" class="input" bind:value={draftType}>
+            <option value="">–</option>
+            {#if fits.length}<optgroup label={a == null ? 'SPI chips' : `Answers at ${ax(a)}`}>{#each fits as c (c.id)}<option value={c.name}>{c.name}{c.body.kind ? ` · ${c.body.kind}` : ''}</option>{/each}</optgroup>{/if}
+            <optgroup label="All chips">{#each library.list.filter((c) => !fits.includes(c)) as c (c.id)}<option value={c.name}>{c.name}</option>{/each}</optgroup>
+          </select>
         </label>
-        {#if suggestions(editing.addr).length}
-          <div class="sugg">{#each suggestions(editing.addr) as s (s)}<button type="button" class="chip" onclick={() => save(s)}>{s}</button>{/each}</div>
-        {/if}
-        {#if editing.port == null && editing.addr >= 0x70 && editing.addr <= 0x77}
+        <label class="field" for="chip-name">Name on this board
+          <!-- svelte-ignore a11y_autofocus -->
+          <input id="chip-name" class="input" bind:value={draft} placeholder={draftType || (a == null ? 'SPI' : ax(a))} maxlength="40" autofocus />
+        </label>
+        {#if editing.port == null && a != null && a >= 0x70 && a <= 0x77 && !library.get(draftType)}
           <label class="check"><input type="checkbox" bind:checked={draftSwitch} /> I2C switch: its writes open ports</label>
         {/if}
-        <p class="hint">Common chips at {ax(editing.addr)}. Kept with {devices.active?.name ?? 'the board on the bench'}.</p>
+        <p class="hint">Kept with {devices.active?.name ?? 'the board on the bench'} (Settings → Devices & sensors). Tables: <a href="#/settings/library">Sensor library</a>.</p>
         {#if saveError}<p class="error">{saveError}</p>{/if}
         <div class="actions">
           <button class="btn small ghost" type="button" onclick={() => (editing = null)}>Cancel</button>
@@ -314,8 +371,10 @@
   .sw > .anchor:first-child .bchip { background: transparent; border-color: transparent; }
   .pn { font-family: var(--mono); font-size: 10.5px; min-width: 16px; height: 16px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--line); color: var(--text); }
   .menu { left: 0; top: calc(100% + 6px); width: 290px; padding: 14px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
-  .sugg { display: flex; flex-wrap: wrap; gap: 6px; }
-  .sugg .chip { min-height: 26px; padding: 2px 9px; }
+  .ttl { margin: 0; font-weight: 600; font-family: var(--mono); font-size: 12.5px; }
+  .rn { color: var(--text); font-family: var(--font); font-size: 12px; }
+  .rx { color: var(--faint); font-size: 11px; margin-left: 4px; }
+  .val { color: var(--flash); font-family: var(--font); }
   .actions { display: flex; gap: 8px; justify-content: flex-end; }
   .menu p { margin: 0; }
 

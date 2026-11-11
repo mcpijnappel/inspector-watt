@@ -55,6 +55,14 @@ class Hardware:
             self._cached = (now, on)
         return self._cached[1]
 
+    def client_name(self, ctx: Context | None) -> str | None:
+        """The MCP client's name and version (e.g. "claude-code 2.1"), for what it saves."""
+        try:
+            info = ctx.request_context.session.client_params.clientInfo
+            return f"{info.name} {info.version}".strip()
+        except AttributeError:
+            return None
+
     def who(self, ctx: Context | None) -> Who:
         rc = getattr(ctx, "request_context", None) if ctx else None
         req = getattr(rc, "request", None)

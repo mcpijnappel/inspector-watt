@@ -251,8 +251,15 @@ it on (below). It never flashes firmware and can't see the upload token.
 
 Tools: `list_sessions`, `get_session`, `range_stats`, `current_over_time`, `search_log`, `list_events`,
 `cycle_summary`, `get_cycle`, `battery_life`, `live_status`, `live_window`, `usb_console_lines`,
-`list_uploads`, `list_profiles`, `test_phase_rules`, `test_cycle_types`, `save_profile`. Units: A, C, seconds
-since the session start.
+`list_uploads`, `list_profiles`, `test_phase_rules`, `test_cycle_types`, `save_profile`, `chips_list`, `chip_get`,
+`board_chips`, `bus_decode`. Units: A, C, seconds since the session start.
+
+**Sensor library** (Settings → Devices & sensors → Sensor library): chip tables shared by every board, one
+entry per bus a chip talks on (I2C addresses, or SPI's read/write bit), each with its own registers or commands and
+formulas that turn bytes into readings, so the logic analyzer's Bus panel can name what it decodes. A board lists its chips on the Boards tab of the same
+page. With *Agents may edit the sensor library* on (Settings → Agents, off by default), agents can also use
+`chip_save` (e.g. a table from a datasheet) and `set_board_chips`; what they save is marked *not checked* until
+you check it. Agents can't check or delete tables.
 
 **Hardware control** (Settings → Agents, off by default) adds `dut_power`, `power_cycle`, `set_voltage`, `measuring`,
 `start_recording`, `stop_recording`, `save_live_range`, `usb_console`, `usb_key` and `usb_send`. Three locks:
@@ -489,7 +496,7 @@ The PPK2 sample index × 10 µs is the master clock; UART lines are mapped onto 
 Defaults are in `compose.yaml`; see `.env.example`. The rest is set in the web UI: the voltage limit (4.2 V
 at first; changing it needs a confirmation, and agents can't), idle power-off, measuring when the PPK2
 connects and raw precision in Settings → Measurement & safety, the free disk to keep in Settings → Storage,
-each board's UART speed in Settings → Devices.
+each board's UART speed in Settings → Devices & sensors.
 
 | Setting | Default | What |
 |---|---|---|
