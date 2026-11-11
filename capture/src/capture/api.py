@@ -45,6 +45,10 @@ class OnOffIn(BaseModel):
 class SettingsIn(BaseModel):
     idle_power_off_s: int | None = Field(None, ge=0, le=86400)
     spike_filter: bool | None = None
+    auto_stream: bool | None = None
+    max_voltage_mv: int | None = Field(None, ge=800, le=5000)  # the tracker's limit (the api only lets the web UI set it)
+    min_free_gb: float | None = Field(None, ge=1, le=10000)
+    raw_mantissa_bits: int | None = Field(None, ge=8, le=23)
     flash_when_asleep: str | None = Field(None, pattern="^(wait|always|cycle)$")
     flash_wake_wait_s: float | None = Field(None, ge=5, le=3600)
 
@@ -141,6 +145,7 @@ class DeviceIn(BaseModel):
     id: int | None = None
     name: str | None = None
     max_mv: int | None = Field(None, ge=800, le=5000)
+    uart_baud: int | None = Field(None, ge=300, le=12_000_000)  # its debug UART's speed
 
 
 class StopIn(BaseModel):
@@ -262,8 +267,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.put("/ppk2/device")
     def set_device(body: DeviceIn):
-        """The device on the bench and its voltage limit (max_mv null = no device: MAX_VOLTAGE_MV only)."""
-        svc.ppk2.set_device(body.model_dump() if body.max_mv else None)
+        """The device on the bench: its voltage limit (max_mv null = no device: the tracker's limit only) and its UART
+        speed."""
+        device_call(svc.set_device, body.model_dump() if body.max_mv else None)
         return svc.ppk2.status()
 
     @app.post("/ppk2/stream")
@@ -276,15 +282,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         svc.ppk2.set_spike_filter(body.on)
         return svc.ppk2.status()
 
+    def all_settings() -> dict:
+        return {**svc.settings(), **(sessions.settings() if sessions else {})}
+
     @app.get("/settings")
     def get_settings():
-        return svc.settings()
+        return all_settings()
 
     @app.put("/settings")
     def put_settings(body: SettingsIn):
         """Change settings while running (the api saves them; they're loaded again at startup)."""
-        svc.apply_settings(body.model_dump())
-        return svc.settings()
+        s = body.model_dump()
+        device_call(svc.apply_settings, s)
+        if sessions:
+            sessions.apply_settings(s)
+        return all_settings()
 
     @app.get("/battery/chemistries")
     def battery_chemistries():

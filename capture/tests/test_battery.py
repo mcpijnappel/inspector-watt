@@ -45,7 +45,7 @@ def test_time_sweep():
 def test_check():
     BatteryConfig().check(4200)
     with pytest.raises(ValueError):
-        BatteryConfig(mode="time", start_mv=4300).check(4200)  # above MAX_VOLTAGE_MV
+        BatteryConfig(mode="time", start_mv=4300).check(4200)  # above the voltage limit
     with pytest.raises(ValueError):
         BatteryConfig(floor_mv=3100, cutoff_mv=3000).check(4200)
 
