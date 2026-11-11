@@ -12,7 +12,7 @@ export type Ppk2Status = {
   /** Last board power change: who did it (user, session start/stop, idle auto-off) and when (unix s). */
   dut_changed: { on: boolean; by: 'user' | 'session' | 'idle' | 'limit' | 'flash' | 'agent'; at: number } | null;
   spike_filter: boolean;
-  /** Effective limit: the device's maximum, capped by MAX_VOLTAGE_MV (hard_max_mv). */
+  /** Effective limit: the device's maximum, capped by the tracker's limit (hard_max_mv, a setting). */
   max_voltage_mv: number;
   hard_max_mv: number;
   device: { id: number; name: string; max_mv: number } | null;
@@ -165,7 +165,8 @@ export type DeviceForm = {
   voltage_mv: number;
   max_mv: number;
   wake_threshold_ua: number;
-  uart_baud: number | null;
+  /** Its debug UART's speed: the UART runs at it while this device is on the bench. */
+  uart_baud: number;
   profile_id: number | null;
 };
 export type Device = DeviceForm & { id: number; profile_name?: string | null; sessions?: number };
@@ -348,10 +349,18 @@ export type BatteryWhatIf = { sleep_s?: number | null; without?: string[]; type?
 export type Measurement = {
   idle_power_off_s: number;
   spike_filter: boolean;
+  /** Start measuring when the PPK2 connects. */
+  auto_stream: boolean;
+  /** The tracker's voltage limit (mV): changed only through setMaxVoltage, never by agents. */
+  max_voltage_mv: number;
+  /** Stop writing raw data below this much free disk. */
+  min_free_gb: number;
+  /** Raw precision of new recordings (23 = lossless). */
+  raw_mantissa_bits: number;
   /** Uploads to a sleeping board: wait for its next wake (power-cycle after flash_wake_wait_s) or power-cycle now. */
   flash_when_asleep: 'wait' | 'always' | 'cycle';
   flash_wake_wait_s: number;
-  fixed: { max_voltage_mv: number; min_free_gb: number; ring_seconds: number; raw_mantissa_bits: number; auto_stream: boolean; uart_baud: number; ppk2_port: string; uart_port: string };
+  fixed: { ring_seconds: number; ppk2_port: string; uart_port: string; usb_port: string };
 };
 export type StorageRow = { id: number; name: string; kind: string; status: string; started_at: string; duration_s: number; raw_bytes: number; raw_files: number; raw_seconds: number; raw_kinds: string[] };
 export type Storage = { disk: { total_bytes: number; free_bytes: number; used_bytes: number }; database_bytes: number | null; raw_bytes: number; min_free_gb: number | null; sessions: StorageRow[] };
@@ -461,7 +470,10 @@ export const api = {
   setSessionProfile: (id: number, profile_id: number) => req<SessionSummary>('PATCH', `/api/sessions/${id}`, { profile_id }),
 
   measurement: () => req<Measurement>('GET', '/api/measurement'),
-  setMeasurement: (m: { idle_power_off_s?: number; spike_filter?: boolean; flash_when_asleep?: 'wait' | 'always' | 'cycle'; flash_wake_wait_s?: number }) => req<Measurement>('PUT', '/api/measurement', m),
+  setMeasurement: (m: { idle_power_off_s?: number; spike_filter?: boolean; flash_when_asleep?: 'wait' | 'always' | 'cycle'; flash_wake_wait_s?: number;
+    auto_stream?: boolean; min_free_gb?: number; raw_mantissa_bits?: number }) => req<Measurement>('PUT', '/api/measurement', m),
+  /** The tracker's voltage limit: the UI asks for a confirmation first; the api refuses it to agents. */
+  setMaxVoltage: (mv: number) => req<Measurement>('PUT', '/api/measurement/max-voltage', { max_voltage_mv: mv }),
   storage: () => req<Storage>('GET', '/api/storage'),
   mcp: () => req<McpStatus>('GET', '/api/mcp'),
   setMcpLan: (lan: boolean) => req<McpStatus>('PUT', '/api/mcp', { lan }),

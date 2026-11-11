@@ -78,6 +78,18 @@ class SessionManager:
         self.spool_dir = data_dir / "spool"
         svc.ppk2.on_resume = self._on_ppk2_resume
 
+    def settings(self) -> dict:
+        return {"min_free_gb": round(self.min_free_bytes / 2**30, 2), "raw_mantissa_bits": self.mantissa_bits}
+
+    def apply_settings(self, s: dict) -> None:
+        """Free disk to keep (also for the running recording) and raw precision (from the next recording)."""
+        if s.get("min_free_gb") is not None:
+            self.min_free_bytes = int(float(s["min_free_gb"]) * 2**30)
+            if self.active:
+                self.active.rec.min_free_bytes = self.min_free_bytes
+        if s.get("raw_mantissa_bits") is not None:
+            self.mantissa_bits = int(s["raw_mantissa_bits"])
+
     # lifecycle -------------------------------------------------------------------------------------------
     def start(self) -> None:
         self._thread.start()
@@ -343,7 +355,7 @@ class SessionManager:
             self._stop_evt.wait(TICK_S)
 
     def _load_device(self) -> None:
-        """At startup: the device on the bench and its voltage limit, and saved settings (idle power-off, spike
+        """At startup: the device on the bench (voltage limit, UART speed), and saved settings (idle power-off, spike
         filter); the api sets them and keeps them in the database."""
         try:
             d = self.store.active_device()
@@ -351,12 +363,13 @@ class SessionManager:
         except Exception:  # database not there yet, or the api hasn't created the tables yet: next tick
             return
         if saved:
-            self.svc.apply_settings(saved)
+            self.svc.apply_settings(saved, startup=True)
+            self.apply_settings(saved)
             log.info("saved settings: %s", saved)
         self._device_loaded = True
         if d and self.svc.ppk2.device is None:  # the api may have pushed it already
-            self.svc.ppk2.set_device(dict(d))
-            log.info("device '%s' (limit %d mV)", d["name"], d["max_mv"])
+            self.svc.set_device(dict(d))
+            log.info("device '%s' (limit %d mV, UART %s baud)", d["name"], d["max_mv"], d.get("uart_baud"))
 
     def _try_recover(self) -> bool:
         """At startup: continue a session that was running when the service stopped."""

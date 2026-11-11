@@ -53,8 +53,10 @@ def allowed(method: str, path: str) -> bool:
 
 class Api:
     def __init__(self, base_url: str | None = None, transport: httpx.AsyncBaseTransport | None = None):
+        # X-PST-Client: the api refuses some things to agents whatever this allow list says (the voltage limit).
         self.http = httpx.AsyncClient(base_url=base_url or os.environ.get("API_URL", "http://api:8000"),
-                                      timeout=httpx.Timeout(180.0, connect=5.0), transport=transport)
+                                      timeout=httpx.Timeout(180.0, connect=5.0), transport=transport,
+                                      headers={"X-PST-Client": "mcp"})
 
     async def request(self, method: str, path: str, params: dict | None = None, json: object = None):
         if not allowed(method, path):

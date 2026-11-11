@@ -105,7 +105,7 @@ class BatteryConfig:
             raise ValueError("floor must be between 0.80 V and the cutoff")
         start = soc_to_mv(self.start_soc, self.chemistry, self.cells) if self.mode == "charge" else self.start_mv
         if start > max_mv:
-            raise ValueError(f"start voltage {start:.0f} mV is above the limit ({max_mv} mV, MAX_VOLTAGE_MV)"
+            raise ValueError(f"start voltage {start:.0f} mV is above the limit ({max_mv} mV)"
                              + (": start at a lower charge" if self.mode == "charge" else ""))
         if start <= self.cutoff_mv:
             raise ValueError("start voltage must be above the cutoff")

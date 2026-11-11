@@ -1,5 +1,6 @@
 <script lang="ts">
-  // Storage overview: disk space, the database, and raw data per session (largest first).
+  // Storage overview: disk space, the database, raw data per session (largest first), and the free space below
+  // which raw writing stops (a setting).
   import { api, type Storage, type StorageRow } from '../../lib/api';
   import { fmtBytes, fmtDuration } from '../../lib/format';
   import SectionHead from './SectionHead.svelte';
@@ -7,9 +8,31 @@
   let st = $state<Storage | null>(null);
   let error = $state('');
   let all = $state(false);
-  $effect(() => {
-    api.storage().then((r) => (st = r)).catch((e) => (error = (e as Error).message));
-  });
+  let minGb = $state('');
+  let saved = $state(false);
+  async function load() {
+    try {
+      st = await api.storage();
+      minGb = String(st.min_free_gb ?? '');
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+  $effect(() => void load());
+  const minChanged = $derived(st != null && parseFloat(minGb.replace(',', '.')) !== st.min_free_gb);
+  async function saveMin(e: SubmitEvent) {
+    e.preventDefault();
+    const v = parseFloat(minGb.replace(',', '.'));
+    if (!(v >= 1 && v <= 10000)) return void (error = 'Keep free: 1 to 10000 GB.');
+    error = '';
+    try {
+      await api.setMeasurement({ min_free_gb: v });
+      await load();
+      saved = true;
+    } catch (err) {
+      error = (err as Error).message;
+    }
+  }
 
   const pct = (a: number, b: number) => (b > 0 ? (a / b) * 100 : 0);
   function kept(r: StorageRow): string {
@@ -38,9 +61,15 @@
       </div>
       <div class="legend small">
         <span><i class="sw used"></i>other files</span><span><i class="sw raw"></i>raw data</span>
-        {#if minFree}<span><i class="sw limit"></i>raw writing stops below {st.min_free_gb} GB free (MIN_FREE_GB)</span>{/if}
+        {#if minFree}<span><i class="sw limit"></i>raw writing stops below {st.min_free_gb} GB free (Keep free, below)</span>{/if}
       </div>
       <p class="faint small">Detail keeps every sample (about 0.7 GB per busy hour); soak keeps 10 ms summaries plus raw data around wakes.</p>
+      <form class="keep" onsubmit={saveMin}>
+        <div class="txt"><strong>Keep free</strong>
+          <span class="muted small">Recordings stop writing raw data below this much free disk (their summaries and logs go on).{saved ? ' Saved.' : ''}</span></div>
+        <span class="input-unit"><input type="text" inputmode="decimal" bind:value={minGb} oninput={() => (saved = false)} aria-label="Keep this many GB free" size="5" /><span class="muted">GB</span></span>
+        <button class="btn small" type="submit" disabled={!minChanged}>Save</button>
+      </form>
     </section>
 
     <section class="panel">
@@ -71,6 +100,8 @@
 <style>
   .card { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
   .card p { margin: 0; }
+  .keep { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line); }
+  .keep .txt { flex: 1; min-width: min(240px, 100%); display: flex; flex-direction: column; gap: 3px; }
   .nums { display: flex; flex-wrap: wrap; gap: 14px 36px; }
   .label { font-size: 12px; color: var(--muted); }
   .big { font-size: 22px; font-weight: 700; }

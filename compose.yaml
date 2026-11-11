@@ -38,14 +38,9 @@ services:
       PPK2_PORT: ${PPK2_PORT:-/host-dev/ppk2}
       UART_PORT: ${UART_PORT:-/host-dev/dut-uart}
       USB_PORT: ${USB_PORT:-/host-dev/dut-usb}  # the board's own USB (console + flashing); opened only on demand
-      UART_BAUD: ${UART_BAUD:-115200}
       RING_SECONDS: ${RING_SECONDS:-300}
-      MAX_VOLTAGE_MV: ${MAX_VOLTAGE_MV:-4200}  # XIAO ESP32-C6 battery input: 1-cell LiPo, max 4.2 V
-      IDLE_POWER_OFF_S: ${IDLE_POWER_OFF_S:-600}  # Board off after this long with no browser open and nothing recording; 0 = never
       DATABASE_URL: *database-url
       DATA_DIR: /data
-      MIN_FREE_GB: ${MIN_FREE_GB:-10}
-      RAW_MANTISSA_BITS: ${RAW_MANTISSA_BITS:-12}  # raw precision; 23 = lossless (~40 % bigger)
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     # The whole host /dev is mounted (not just the device nodes), so the udev symlinks /dev/ppk2 and
     # /dev/dut-uart keep working after a replug renumbers ttyACM*. The cgroup rules allow only USB CDC ACM

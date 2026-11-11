@@ -53,10 +53,10 @@ class Store:
             return False
 
     def active_device(self) -> dict | None:
-        """The device on the bench (settings.device), with its voltage limit. The tables come from the api's
+        """The device on the bench (settings.device), with its voltage limit and UART speed. The tables come from the api's
         migrations, so this can fail until the api has started once."""
         return self._run(lambda c: c.execute(
-            "SELECT d.id, d.name, d.max_mv FROM settings s JOIN devices d ON d.id = (s.value->>'id')::bigint "
+            "SELECT d.id, d.name, d.max_mv, d.uart_baud FROM settings s JOIN devices d ON d.id = (s.value->>'id')::bigint "
             "WHERE s.key = 'device'").fetchone())
 
     def saved_settings(self) -> dict | None:

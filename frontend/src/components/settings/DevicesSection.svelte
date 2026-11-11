@@ -7,7 +7,7 @@
   import SectionHead from './SectionHead.svelte';
 
   const BAUDS = [9600, 57600, 115200, 230400, 460800, 921600];
-  const EMPTY: DeviceForm = { name: '', notes: '', voltage_mv: 3700, max_mv: 4200, wake_threshold_ua: 5000, uart_baud: null, profile_id: null };
+  const EMPTY: DeviceForm = { name: '', notes: '', voltage_mv: 3700, max_mv: 4200, wake_threshold_ua: 5000, uart_baud: 115200, profile_id: null };
 
   let profiles = $state<Profile[]>([]);
   let editing = $state<number | 'new' | null>(null);
@@ -84,9 +84,9 @@
   }
 
   function summary(d: Device): string {
-    const cap = hardMax && hardMax < d.max_mv ? `, capped at ${V(hardMax)} by MAX_VOLTAGE_MV` : '';
+    const cap = hardMax && hardMax < d.max_mv ? `, capped at ${V(hardMax)} by the tracker's limit` : '';
     const parts = [`${V(d.voltage_mv)} (max ${V(d.max_mv)}${cap})`, `wake ≥ ${d.wake_threshold_ua / 1000} mA`];
-    if (d.uart_baud) parts.push(`${d.uart_baud} baud`);
+    parts.push(`${d.uart_baud} baud`);
     parts.push(d.profile_name ? `phase rules: ${d.profile_name}` : 'phase rules: last used');
     return parts.join(' · ');
   }
@@ -104,13 +104,13 @@
         <label class="field wide">Name<input class="input" type="text" bind:value={form.name} maxlength="100" /></label>
         <label class="field">Default voltage<span class="input-unit"><input type="text" inputmode="decimal" bind:value={volts} /><span class="muted">V</span></span><span class="hint">Turn on and new recordings</span></label>
         <label class="field">Maximum<span class="input-unit"><input type="text" inputmode="decimal" bind:value={maxVolts} /><span class="muted">V</span></span>
-          <span class="hint">{hardMax && parseMv(maxVolts) > hardMax ? `capped at ${V(hardMax)} by MAX_VOLTAGE_MV` : 'nothing goes above this'}</span></label>
+          <span class="hint">{hardMax && parseMv(maxVolts) > hardMax ? `capped at ${V(hardMax)} by the tracker's limit` : 'nothing goes above this'}</span></label>
         <label class="field">Wake threshold<span class="input-unit"><input type="text" inputmode="decimal" bind:value={wakeMa} /><span class="muted">mA</span></span></label>
         <label class="field">UART baud
           <select class="input" bind:value={form.uart_baud}>
-            <option value={null}>keep current</option>
-            {#each BAUDS as b (b)}<option value={b}>{b}</option>{/each}
+            {#each BAUDS.includes(form.uart_baud) ? BAUDS : [...BAUDS, form.uart_baud].sort((a, b) => a - b) as b (b)}<option value={b}>{b}</option>{/each}
           </select>
+          <span class="hint">Its debug log; set when it goes on the bench</span>
         </label>
         <label class="field">Phase rules
           <select class="input" bind:value={form.profile_id}>
