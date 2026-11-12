@@ -415,7 +415,7 @@ export type McpToken = { id: number; name: string; token: string; created: strin
 export type McpStatus = { lan: boolean; hardware: boolean; library: boolean; tokens: McpToken[]; server: { up: boolean; error?: string; tools?: { name: string; description: string }[] } };
 export type Health = { db: boolean; capture: boolean; mcp: boolean };
 
-/** Sensor library: how a chip talks on I2C (see api/src/api/chips.py) */
+/** Sensor library: how a chip talks on I2C and SPI (see api/src/api/chips.py) */
 export type ChipValue = { name: string; unit?: string; expr: string };
 export type ChipRegister = { addr: number; name: string; rw?: 'r' | 'w' | 'rw'; about?: string; fields?: string; bytes?: number; values?: ChipValue[] };
 export type ChipCommand = { code: number; name: string; reply?: number; wait_ms?: number; about?: string; values?: ChipValue[] };
@@ -427,8 +427,15 @@ export type ChipBus = {
   style?: 'registers' | 'commands' | 'switch' | 'basic'; reg_bytes?: 1 | 2; byte_order?: 'big' | 'little';
   registers?: ChipRegister[]; commands?: ChipCommand[]; bank?: { reg: number; mask: number; about?: string };
 };
-export type ChipTable = { name: string; vendor?: string; kind?: string; buses: ChipBus[]; datasheet?: string; notes?: string };
-export type Chip = { id: number; name: string; body: ChipTable; source: 'built-in' | 'you' | 'agent'; agent: string | null; checked: boolean; updated_at: string; boards: string[] };
+export const CHIP_CATEGORIES = ['sensor', 'switch', 'memory', 'clock', 'display', 'converter', 'gpio', 'other'] as const;
+export type ChipCategory = (typeof CHIP_CATEGORIES)[number];
+/** What a chip measures: a fixed list (the same as api chips.TAGS), several per chip. */
+export const CHIP_TAGS = ['temperature', 'humidity', 'pressure', 'gas', 'co2', 'light', 'spectral', 'uv', 'infrared', 'acceleration',
+  'rotation', 'magnetic', 'distance', 'current', 'voltage', 'power', 'battery', 'analog'] as const;
+export type ChipTag = (typeof CHIP_TAGS)[number];
+export type ChipTable = { name: string; vendor?: string; kind?: string; category?: ChipCategory; tags?: ChipTag[]; buses: ChipBus[]; datasheet?: string; datasheet_url?: string; notes?: string };
+/** built_in: the tracker ships a table by this name; with a source other than 'built-in', someone changed it. */
+export type Chip = { id: number; name: string; body: ChipTable; source: 'built-in' | 'you' | 'agent'; agent: string | null; checked: boolean; built_in: boolean; updated_at: string; boards: string[] };
 export type BoardChip = { name?: string; type?: string; switch?: boolean };
 
 /** now / min / avg / max over the chosen period */
@@ -545,6 +552,7 @@ export const api = {
   createChip: (t: ChipTable) => req<Chip>('POST', '/api/chips', t),
   updateChip: (id: number, t: ChipTable) => req<Chip>('PUT', `/api/chips/${id}`, t),
   checkChip: (id: number, checked: boolean) => req<Chip>('POST', `/api/chips/${id}/check?checked=${checked}`),
+  restoreChip: (id: number) => req<Chip>('POST', `/api/chips/${id}/restore`),
   deleteChip: (id: number) => req<{ deleted: number; boards: string[] }>('DELETE', `/api/chips/${id}`),
   moduleLiveEvents: <T>(name: string, afterSeq: number) => req<T[]>('GET', `/api/modules/${name}/events/live?after_seq=${afterSeq}&limit=2000`),
   /** The logic analyzer: decode the last seconds of its buffer (the transactions also land in the Live list). */

@@ -146,7 +146,7 @@ def test_only_safe_writes():
                  ("POST", "/api/mcp/tokens/1/renew"), ("PUT", "/api/measurement"),
                  ("PUT", "/api/measurement/max-voltage"), ("POST", "/api/modules/analyzer/events"),
                  ("PUT", "/api/modules/analyzer/settings"), ("POST", "/api/modules/analyzer/scan"),
-                 ("POST", "/api/chips/3/check"), ("DELETE", "/api/chips/3"), ("PUT", "/api/devices/1"),
+                 ("POST", "/api/chips/3/check"), ("POST", "/api/chips/3/restore"), ("DELETE", "/api/chips/3"), ("PUT", "/api/devices/1"),
                  ("POST", "/api/chips/3"), ("PUT", "/api/chips")]:
         assert not allowed(m, p), (m, p)
     for m, p in [("PUT", "/api/profiles/1"), ("POST", "/api/profiles"), ("POST", "/api/sessions/3/phases/test"),
@@ -321,13 +321,14 @@ def test_sensor_library_tools(calls):
     # an existing chip is updated, a new one added; the agent's name goes along
     i2c = server.ChipBus(bus="i2c", addresses=[0x44], style="commands")
     assert run(server.chip_save(server.ChipTable(name="sht4x", buses=[i2c]), ctx))["updated"] == "SHT4x"
-    added = server.ChipTable(name="LIS3DH", buses=[server.ChipBus(bus="i2c", addresses=[0x18]), server.ChipBus(bus="spi", inc_bit=0x40)])
+    added = server.ChipTable(name="LIS3DH", tags=["acceleration"], buses=[server.ChipBus(bus="i2c", addresses=[0x18]), server.ChipBus(bus="spi", inc_bit=0x40)])
     assert run(server.chip_save(added, ctx))["added"] == "LIS3DH"
     puts = [c for c in calls if c[0] in ("PUT", "POST") and c[1].startswith("/api/chips")]
     assert [c[1] for c in puts] == ["/api/chips/3", "/api/chips"]
     assert run(server.chip_get("SHT4X"))["table"]["buses"][0]["style"] == "commands"
     assert run(server.chips_list())["chips"][0]["buses"] == [{"bus": "i2c", "addresses": ["0x44"], "style": "commands", "registers": 0, "commands": 0}]
     sent = json.loads(next(c for c in calls if c[0] == "POST" and c[1] == "/api/chips")[3])
+    assert sent["tags"] == ["acceleration"]
     assert sent["buses"] == [{"bus": "i2c", "addresses": [0x18], "style": "basic", "reg_bytes": 1, "byte_order": "big", "registers": [], "commands": []},
                              {"bus": "spi", "addresses": [], "inc_bit": 0x40, "style": "basic", "reg_bytes": 1, "byte_order": "big", "registers": [], "commands": []}]
     # board chips: changes merge, removals drop, the rest stays

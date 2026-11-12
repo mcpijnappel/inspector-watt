@@ -257,9 +257,13 @@ Tools: `list_sessions`, `get_session`, `range_stats`, `current_over_time`, `sear
 **Sensor library** (Settings → Devices & sensors → Sensor library): chip tables shared by every board, one
 entry per bus a chip talks on (I2C addresses, or SPI's read/write bit), each with its own registers or commands and
 formulas that turn bytes into readings, so the logic analyzer's Bus panel can name what it decodes. A board lists its chips on the Boards tab of the same
-page. With *Agents may edit the sensor library* on (Settings → Agents, off by default), agents can also use
+page. Filter the list by bus, what a chip measures (fixed tags: temperature, humidity, light, current, …), type, who
+made it or whether a board uses it; add and edit chips in a form (formulas are
+checked as you type) or as JSON, and import or export a chip as a JSON file. The built-in tables (28 common chips)
+were checked against the datasheet each one names; change one and it's yours, with *Back to built in* to undo that.
+With *Agents may edit the sensor library* on (Settings → Agents, off by default), agents can also use
 `chip_save` (e.g. a table from a datasheet) and `set_board_chips`; what they save is marked *not checked* until
-you check it. Agents can't check or delete tables.
+you check it. Agents can't check, restore or delete tables.
 
 **Hardware control** (Settings → Agents, off by default) adds `dut_power`, `power_cycle`, `set_voltage`, `measuring`,
 `start_recording`, `stop_recording`, `save_live_range`, `usb_console`, `usb_key` and `usb_send`. Three locks:

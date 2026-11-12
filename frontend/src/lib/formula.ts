@@ -56,3 +56,66 @@ export function fmtValue(v: number): string {
   const a = Math.abs(v);
   return a >= 1000 || Number.isInteger(v) ? v.toFixed(0) : a >= 100 ? v.toFixed(1) : v.toFixed(a >= 10 ? 1 : 2);
 }
+
+export type FormulaCheck = { ok: true; need: number; value: number | null } | { ok: false; error: string };
+
+/** Check a formula as the API does (same messages as api chips.check_formula) and, when it parses, calculate it for
+ *  sample bytes: value null when the sample is too short. need: how many bytes it reads. */
+export function check(expr: string, bytes: number[] = []): FormulaCheck {
+  const toks: string[] = [];
+  for (const m of expr.matchAll(/\s*(?:(\d+(?:\.\d+)?)|([a-z][a-z0-9]*)|(.))/g)) {
+    if (m[0] === '') break;
+    const t = m[1] ?? m[2] ?? m[3];
+    if (t == null || !t.trim()) continue;
+    if (m[3] != null && !'+-*/(),'.includes(t)) return { ok: false, error: `not allowed in a formula: '${t}'` };
+    toks.push(t);
+  }
+  if (!expr.trim()) return { ok: false, error: 'empty formula' };
+  let i = 0;
+  let need = 0;
+  let short = false;
+  class Bad extends Error {}
+  const at = () => (i < toks.length ? `'${toks[i]}'` : "'the end'");
+  const take = (want?: string) => {
+    if (want != null && toks[i] !== want) throw new Bad(`expected ${want} at ${at()}`);
+    return toks[i++];
+  };
+  const atom = (): number => {
+    const t = toks[i];
+    if (t === '(') { take(); const v = sum(); take(')'); return v; }
+    if (t === '-') { take(); return -atom(); }
+    if (t != null && /^\d/.test(t)) { take(); return parseFloat(t); }
+    if (t != null && /^[a-z]/.test(t)) {
+      if (!(t in WIDTH)) throw new Bad(`unknown function '${t}' (use ${Object.keys(WIDTH).join(', ')})`);
+      take();
+      take('(');
+      const idx = toks[i];
+      if (idx == null || !/^\d/.test(idx)) throw new Bad(`expected num at ${at()}`);
+      if (!/^\d+$/.test(idx)) throw new Bad('a byte index is a whole number');
+      take();
+      take(')');
+      need = Math.max(need, Number(idx) + WIDTH[t]);
+      const v = read(t, bytes, Number(idx));
+      if (v == null) { short = true; return 0; }
+      return v;
+    }
+    throw new Bad(`unexpected '${t ?? 'end'}'`);
+  };
+  const prod = (): number => { let v = atom(); while (toks[i] === '*' || toks[i] === '/') v = take() === '*' ? v * atom() : v / atom(); return v; };
+  const sum = (): number => { let v = prod(); while (toks[i] === '+' || toks[i] === '-') v = take() === '+' ? v + prod() : v - prod(); return v; };
+  try {
+    const v = sum();
+    if (i !== toks.length) return { ok: false, error: `unexpected '${toks[i]}'` };
+    return { ok: true, need, value: short || !Number.isFinite(v) ? null : v };
+  } catch (e) {
+    if (e instanceof Bad) return { ok: false, error: e.message };
+    throw e;
+  }
+}
+
+/** "2C 01" or "0x2c,0x01" -> [0x2c, 0x01]; null when a part isn't a byte in hex. */
+export function parseBytes(text: string): number[] | null {
+  const parts = text.trim().split(/[\s,]+/).filter(Boolean);
+  const out = parts.map((p) => (/^(0x)?[0-9a-f]{1,2}$/i.test(p) ? parseInt(p.replace(/^0x/i, ''), 16) : NaN));
+  return out.some(Number.isNaN) ? null : out;
+}

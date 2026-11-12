@@ -428,13 +428,20 @@ class ChipCommand(BaseModel):
     values: list[ChipValue] = Field([], description="Readings from the answer")
 
 
+class ChipBank(BaseModel):
+    reg: int = Field(description="The register with the bank or page bit")
+    mask: int = Field(description="The bit(s) that pick the bank, e.g. 0x10")
+    about: str = Field("", description="Which bank holds which registers")
+
+
 class ChipBus(BaseModel):
     bus: Literal["i2c", "spi"] = Field(description="The bus this entry is for; one entry per bus the chip can use")
     addresses: list[int] = Field([], description="I2C: the 7-bit addresses it can answer at (numbers)")
     read_bit: int | None = Field(None, description="SPI: the bit of the first byte that says read or write (usually 0x80)")
     read_when_set: bool | None = Field(None, description="SPI: True (default) = that bit set means read")
     inc_bit: int | None = Field(None, description="SPI: auto-increment bit, if any (ST: 0x40)")
-    mode: int | None = Field(None, description="SPI mode 0-3")
+    mode: int | None = Field(None, description="SPI mode 0-3 (leave out when the chip takes more than one)")
+    max_hz: int | None = Field(None, description="SPI: highest clock the datasheet allows, in Hz")
     style: Literal["registers", "commands", "switch", "basic"] = Field(
         "basic", description="registers: write a register address then read / write address + data. commands: a "
                              "command, the answer read later. switch: an I2C switch (bit n opens port n). basic: no table")
@@ -443,26 +450,37 @@ class ChipBus(BaseModel):
     registers: list[ChipRegister] = Field([], description="This bus's registers (repeat them for each bus, or differ)")
     commands: list[ChipCommand] = []
     ports: int | None = Field(None, description="I2C switch: number of ports")
+    bank: ChipBank | None = Field(None, description="Only for chips that page their registers (AS7343, BME680 on SPI)")
 
 
 class ChipTable(BaseModel):
     name: str = Field(description="Chip type, e.g. SHT4x, VEML7700 (a family name when the variants share a table)")
     vendor: str = ""
     kind: str = Field("", description="What it is, e.g. Ambient light")
+    category: Literal["sensor", "switch", "memory", "clock", "display", "converter", "gpio", "other"] | None = Field(
+        None, description="For the library's type filter: switch = I2C switch/mux, converter = ADC, current or battery "
+                          "monitor, gpio = GPIO expander")
+    tags: list[Literal["temperature",  # the same list as api chips.TAGS "humidity", "pressure", "gas", "co2", "light", "spectral", "uv", "infrared",
+                       "acceleration", "rotation", "magnetic", "distance", "current", "voltage", "power", "battery",
+                       "analog"]] = Field([], description="What it measures, as many as fit (its main functions only, "
+                                                          "not e.g. an accelerometer's on-chip temperature sensor)")
     buses: list[ChipBus] = Field(description="One entry per bus it talks on (I2C, SPI), each with its own settings and table")
-    datasheet: str = Field("", description="Which datasheet (title, revision) the table comes from")
+    datasheet: str = Field("", description="Which datasheet (title, document number, revision) the table comes from")
+    datasheet_url: str = Field("", description="Link to that datasheet (https://...)")
     notes: str = ""
 
 
 @mcp.tool()
 async def chips_list() -> dict:
-    """The sensor library: every chip type with its addresses, how complete its table is, whether a person checked
-    it, and which boards use it."""
+    """The sensor library: every chip type with its addresses, how complete its table is, whether it's checked
+    (built-in tables are checked against their datasheet by the project; an agent's table until a person checks it),
+    and which boards use it."""
     rows = await api.get("/api/chips")
     def bus(b: dict) -> dict:
         return {"bus": b["bus"], **({"addresses": [hex(a) for a in b.get("addresses", [])]} if b["bus"] == "i2c" else {}),
                 "style": b.get("style", "basic"), "registers": len(b.get("registers", [])), "commands": len(b.get("commands", []))}
     return {"chips": [{"name": r["name"], "vendor": r["body"].get("vendor", ""), "kind": r["body"].get("kind", ""),
+                       "category": r["body"].get("category"), "tags": r["body"].get("tags", []),
                        "buses": [bus(b) for b in r["body"].get("buses", [])],
                        "source": r["source"], "checked": r["checked"], "boards": r["boards"]} for r in rows]}
 
@@ -479,8 +497,9 @@ async def chip_get(name: Annotated[str, Field(description="Chip type name, e.g. 
 @mcp.tool()
 async def chip_save(table: ChipTable, ctx: Context) -> dict:
     """Add a chip type to the sensor library, or replace its table (matched by name), e.g. from its datasheet.
-    Only put in what the datasheet says: leave out registers or formulas you're not sure of. What you save is marked
-    "by agent, not checked" until the user checks it in Settings → Devices & sensors → Sensor library. Needs
+    Only put in what the datasheet says: leave out registers or formulas you're not sure of, and name the datasheet
+    and its revision. What you save is marked "by agent, not checked" until the user checks it in Settings → Devices &
+    sensors → Sensor library; saving over a built-in table makes it yours (the user can put the built-in back). Needs
     "Agents may edit the sensor library" in Settings → Agents; if it's off, ask the user to switch it on."""
     body = table.model_dump(exclude_none=True)
     body["buses"] = [b.model_dump(exclude_none=True) for b in table.buses]
