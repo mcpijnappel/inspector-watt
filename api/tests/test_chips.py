@@ -35,7 +35,10 @@ def test_tables_are_checked():
                 {"name": "X", "buses": [{**i2c, "registers": [{"addr": 1, "name": "A"}, {"addr": 1, "name": "B"}]}]},
                 {"name": "X", "buses": [{**i2c, "registers": [{"addr": 1, "name": "A", "values": [{"name": "v", "expr": "eval(1)"}]}]}]},
                 {"name": "X", "buses": [{"bus": "spi", "style": "switch"}]},  # a switch is I2C
-                {"name": "X", "buses": [{"bus": "spi", "read_bit": 0}]}):
+                {"name": "X", "buses": [{"bus": "spi", "read_bit": 0}]},
+                {"name": "X", "category": "toaster", "buses": [i2c]},
+                {"name": "X", "tags": ["temp"], "buses": [i2c]},  # tags come from the fixed list only
+                {"name": "X", "datasheet_url": "javascript:alert(1)", "buses": [i2c]}):
         with pytest.raises(ValidationError):
             chips.ChipIn.model_validate(bad)
 
@@ -55,6 +58,14 @@ def test_built_in_chips_are_valid_tables():
     assert len(names) == len(set(n.lower() for n in names)) >= 24
     for c in chips.BUILT_IN:
         chips.table(c)
+        # each says which datasheet (and revision) it was checked against, and links it
+        assert c["category"] in chips.CATEGORIES and c["datasheet"] and c["datasheet_url"].startswith("http"), c["name"]
+    # tags from the fixed list, several per chip, each once and in the list's order
+    assert chips.ChipIn(name="X", tags=["humidity", "temperature", "humidity"], buses=[{"bus": "i2c", "addresses": [0x40]}]).tags == ["temperature", "humidity"]
+    temp = sorted(c["name"] for c in chips.BUILT_IN if "temperature" in chips.table(c).get("tags", []))
+    assert temp == ["AHT20", "BME280", "BME680", "BMP280", "HDC1080", "SCD4x", "SHT3x", "SHT4x"]
+    as7343 = {r["addr"] for r in next(c for c in chips.BUILT_IN if c["name"] == "AS7343")["buses"][0]["registers"]}
+    assert {0x6B, 0xCD, 0xFA} <= as7343  # used by the test board's firmware
     sht = next(c for c in chips.BUILT_IN if c["name"] == "SHT4x")
     # the formula gives the SHT4x's own example: 0x6666 -> 25 °C (175 * 0.4 - 45)
     assert sht["buses"][0]["commands"][0]["values"][0]["expr"] == "-45 + 175 * u16(0) / 65535"
@@ -86,11 +97,14 @@ class FakeDb:
         if "WHERE lower(name) = lower(%s)" in s:
             return [r for r in self.rows.values() if r["name"].lower() == p[0].lower()]
         if s.startswith("UPDATE chip_types SET body"):
-            self.rows[p[1]]["body"] = p[0].obj
+            self.rows[p[1]].update(body=p[0].obj, checked=True)
             return [{"id": p[1]}]
+        if s.startswith("UPDATE chip_types SET name = %s, body = %s, source = 'built-in'"):
+            self.rows[p[2]].update(name=p[0], body=p[1].obj, source="built-in", agent=None, checked=True)
+            return [self.rows[p[2]]]
         if s.startswith("INSERT INTO chip_types"):
             i = len(self.rows) + 1
-            src, agent, checked = (p[2], p[3], p[4]) if len(p) > 2 else ("built-in", None, False)
+            src, agent, checked = (p[2], p[3], p[4]) if len(p) > 2 else ("built-in", None, True)
             self.rows[i] = {"id": i, "name": p[0], "body": p[1].obj, "source": src, "agent": agent, "checked": checked}
             return [self.rows[i]]
         if s.startswith("SELECT name FROM chip_types WHERE id"):
@@ -101,7 +115,7 @@ class FakeDb:
             self.rows[p[5]].update(name=p[0], body=p[1].obj, source=p[2], agent=p[3], checked=p[4])
             return [self.rows[p[5]]]
         if s.startswith("UPDATE chip_types SET checked"):
-            if p[1] not in self.rows:
+            if p[1] not in self.rows or self.rows[p[1]]["source"] == "built-in":
                 return []
             self.rows[p[1]]["checked"] = p[0]
             return [self.rows[p[1]]]
@@ -110,6 +124,8 @@ class FakeDb:
             return [r] if r else []
         if "FROM chip_types ORDER BY" in s:
             return list(self.rows.values())
+        if s.startswith("SELECT id FROM chip_types WHERE id"):
+            return [{"id": p[0]}] if p[0] in self.rows else []
         if "FROM chip_types WHERE id" in s:
             return [self.rows[p[0]]] if p[0] in self.rows else []
         raise AssertionError(f"unexpected query: {s}")
@@ -162,7 +178,7 @@ def test_seeding_adds_only_missing_chips(db):
     from psycopg.types.json import Jsonb
     assert asyncio.run(chips.seed(db.q_one, Jsonb)) == len(chips.BUILT_IN)
     assert asyncio.run(chips.seed(db.q_one, Jsonb)) == 0
-    assert all(r["source"] == "built-in" and not r["checked"] for r in db.rows.values())
+    assert all(r["source"] == "built-in" and r["checked"] for r in db.rows.values())  # checked by the project
     # an older built-in table is brought up to date; one somebody changed is left alone
     sht = next(r for r in db.rows.values() if r["name"] == "SHT4x")
     sht["body"] = {"name": "SHT4x", "addresses": [68]}  # an older version of the table
@@ -170,6 +186,30 @@ def test_seeding_adds_only_missing_chips(db):
     veml.update(body={"name": "VEML7700", "addresses": [16]}, source="you")
     assert asyncio.run(chips.seed(db.q_one, Jsonb)) == 1
     assert sht["body"]["buses"][0]["style"] == "commands" and veml["body"] == {"name": "VEML7700", "addresses": [16]}
+    # a database from before: built-ins saved as "not checked" become checked, with this version's table
+    for r in db.rows.values():
+        r["checked"] = False
+    assert asyncio.run(chips.seed(db.q_one, Jsonb)) == len(chips.BUILT_IN) - 1
+    assert all(r["checked"] for r in db.rows.values() if r["source"] == "built-in") and not veml["checked"]
+
+
+def test_built_ins_are_checked_and_can_be_restored(db):
+    import asyncio
+    from psycopg.types.json import Jsonb
+    asyncio.run(chips.seed(db.q_one, Jsonb))
+    c = TestClient(main.app)
+    veml = next(r for r in c.get("/api/chips").json() if r["name"] == "VEML7700")
+    assert (veml["source"], veml["checked"], veml["built_in"]) == ("built-in", True, True)
+    assert c.post(f"/api/chips/{veml['id']}/check?checked=false").status_code == 409  # no "Mark as checked" for built-ins
+    # a person changes it: theirs now, still known as a built-in, and it can go back
+    changed = c.put(f"/api/chips/{veml['id']}", json={"name": "veml7700", "buses": [{"bus": "i2c", "addresses": [0x10]}]}).json()
+    assert (changed["source"], changed["built_in"]) == ("you", True)
+    assert c.post(f"/api/chips/{veml['id']}/restore", headers=AGENT).status_code == 403
+    back = c.post(f"/api/chips/{veml['id']}/restore").json()
+    assert (back["name"], back["source"], back["checked"]) == ("VEML7700", "built-in", True)
+    assert back["body"]["buses"][0]["registers"][0]["name"] == "ALS_CONF_0"
+    own = c.post("/api/chips", json={**SHT, "name": "MYCHIP"}).json()
+    assert own["built_in"] is False and c.post(f"/api/chips/{own['id']}/restore").status_code == 409
 
 
 def test_board_chip_keys():
