@@ -6,7 +6,7 @@ import pytest
 
 from types import SimpleNamespace
 
-from pst_mcp import hardware, server
+from pst_mcp import hardware, modules, server
 from pst_mcp.auth import TokenGate
 from pst_mcp.client import Api, ApiError, allowed
 
@@ -40,6 +40,8 @@ def fake_api(calls):
             return httpx.Response(200, json={"start": 1_000_000, "bin_samples": 250_000, "mean": [1e-3] * 4, "min": [0] * 4, "max": [2e-3] * 4})
         if p == "/api/device/uart/lines":
             return httpx.Response(200, json=[{"seq": i, "wall": w, "text": f"l{i}"} for i, w in enumerate([980.0, 995.0, 999.5])])
+        if p == "/api/modules":
+            return httpx.Response(200, json=[{"name": "analyzer", "installed": STATE["analyzer"]}])
         if p == "/api/mcp/auth":
             return httpx.Response(200, json={"lan": False, "token": None, "hardware": STATE["hardware"]})
         if p == "/api/agents/requests" and req.method == "POST":
@@ -67,16 +69,17 @@ def fake_api(calls):
     return handler
 
 
-STATE = {"hardware": False, "ask": "pending", "answer": "allowed"}
+STATE = {"hardware": False, "ask": "pending", "answer": "allowed", "analyzer": True}
 
 
 @pytest.fixture
 def calls(monkeypatch):
     calls = []
-    STATE.update(hardware=False, ask="pending", answer="allowed")
+    STATE.update(hardware=False, ask="pending", answer="allowed", analyzer=True)
     a = Api(base_url="http://api", transport=httpx.MockTransport(fake_api(calls)))
     monkeypatch.setattr(server, "api", a)
     monkeypatch.setattr(server, "hw", hardware.Hardware(a))
+    monkeypatch.setattr(server, "modules", modules.Modules(a))
     monkeypatch.setattr(hardware, "POLL_S", 0.01)
     return calls
 
@@ -330,3 +333,17 @@ def test_sensor_library_tools(calls):
     # board chips: changes merge, removals drop, the rest stays
     r = run(server.set_board_chips({"1:16": server.BoardChip(type="VEML7700", name="Light 1")}, remove=["0:16"]))
     assert r["chips"] == {"m:68": {"type": "SHT4x"}, "1:16": {"type": "VEML7700", "name": "Light 1"}}
+
+
+def test_sensor_library_tools_only_with_a_bus_module(calls):
+    STATE["analyzer"] = False
+    tools = {t.name for t in run(server.mcp.list_tools())}
+    assert tools == READ_TOOLS - server.LIBRARY_TOOLS
+    with pytest.raises(Exception, match="needs the logic analyzer module"):
+        run(server.mcp.call_tool("chips_list", {}))
+    assert not any(c[1] == "/api/chips" for c in calls)  # refused before it asks the api
+    # installed again: listed and usable (after the short cache)
+    STATE["analyzer"] = True
+    server.modules._cached = None
+    assert server.LIBRARY_TOOLS <= {t.name for t in run(server.mcp.list_tools())}
+    assert run(server.mcp.call_tool("chips_list", {}))

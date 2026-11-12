@@ -9,12 +9,18 @@
   import ModulesSection from '../components/settings/ModulesSection.svelte';
   import ProfilesSection from '../components/settings/ProfilesSection.svelte';
   import StorageSection from '../components/settings/StorageSection.svelte';
+  import { bus } from '../lib/bus.svelte';
   import '../components/settings/settings.css';
 
   let { section }: { section?: string } = $props();
 
-  const SECTIONS = [
-    { id: 'devices', label: 'Devices & sensors', hint: 'Boards, their chips, the sensor library' },
+  // The sensor library (and each board's chips) only with a module that decodes buses: the logic analyzer.
+  $effect(() => bus.watch());
+  const library = $derived(bus.analyzer != null);
+  const SECTIONS = $derived([
+    library
+      ? { id: 'devices', label: 'Devices & sensors', hint: 'Boards, their chips and sensors, the sensor library' }
+      : { id: 'devices', label: 'Devices', hint: 'Boards, their voltages and defaults' },
     { id: 'profiles', label: 'Phase profiles', hint: 'Phase rules, cycle types, record presets' },
     { id: 'measurement', label: 'Measurement & safety', hint: 'Idle power-off, spike filter, batteries' },
     { id: 'firmware', label: 'Firmware upload', hint: 'Upload status, token, build setup' },
@@ -22,11 +28,13 @@
     { id: 'modules', label: 'Modules', hint: 'Logic analyzer and other extras' },
     { id: 'agents', label: 'Agents (MCP)', hint: 'Connect AI agents, hardware control' },
     { id: 'health', label: 'System health', hint: 'PPK2 stream, UART, services' },
-  ] as const;
+  ]);
   const KEY = 'pst.settings.section';
-  // Sub-pages: #/settings/library is the Sensor library tab of "Devices & sensors"
+  // Sub-pages: #/settings/library is the Sensor library tab of "Devices & sensors" (kept while the module list
+  // is still loading, so a link to it doesn't jump to Boards first)
   const SUB: Record<string, string> = { library: 'devices' };
-  const known = (id: string | null | undefined) => !!id && (SECTIONS.some((s) => s.id === id) || id in SUB);
+  const known = (id: string | null | undefined) =>
+    !!id && (SECTIONS.some((s) => s.id === id) || (id in SUB && (library || !bus.modulesKnown)));
 
   function remembered(): string {
     try {
@@ -60,11 +68,13 @@
     </nav>
     <main class="content settings">
       {#if current === 'devices'}
-        <div class="subtabs" role="tablist" aria-label="Devices and sensors">
-          <a role="tab" href="#/settings/devices" aria-selected={page === 'devices'}>Boards</a>
-          <a role="tab" href="#/settings/library" aria-selected={page === 'library'}>Sensor library</a>
-        </div>
-        {#if page === 'library'}<LibrarySection />{:else}<DevicesSection />{/if}
+        {#if library}
+          <div class="subtabs" role="tablist" aria-label="Devices and sensors">
+            <a role="tab" href="#/settings/devices" aria-selected={page === 'devices'}>Boards</a>
+            <a role="tab" href="#/settings/library" aria-selected={page === 'library'}>Sensor library</a>
+          </div>
+        {/if}
+        {#if page === 'library'}{#if library}<LibrarySection />{/if}{:else}<DevicesSection />{/if}
       {:else if current === 'profiles'}<ProfilesSection />
       {:else if current === 'measurement'}<MeasurementSection />
       {:else if current === 'firmware'}<FirmwareSection />

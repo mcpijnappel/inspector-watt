@@ -2,6 +2,7 @@
   // Devices (boards): defaults for power-on and recording, a voltage limit capture enforces, and the phase rules
   // their new sessions get. One card per device; Edit unfolds the form in place.
   import { api, type Device, type DeviceForm, type Profile } from '../../lib/api';
+  import { bus } from '../../lib/bus.svelte';
   import { devices } from '../../lib/devices.svelte';
   import { live } from '../../lib/live.svelte';
   import BoardChips from './BoardChips.svelte';
@@ -94,7 +95,7 @@
 </script>
 
 <div class="s-section">
-  <SectionHead title="Boards" intro="The board on the bench sets the Turn on voltage, record defaults and phase rules for new sessions. Each board lists the chips on its bus, from the sensor library.">
+  <SectionHead title="Boards" intro={`The board on the bench sets the Turn on voltage, record defaults and phase rules for new sessions.${bus.analyzer ? ' Each board lists the chips and sensors on its bus, from the sensor library.' : ''}`}>
     {#snippet action()}<button class="btn primary" type="button" disabled={editing === 'new'} onclick={() => edit(null)}>Add device</button>{/snippet}
   </SectionHead>
   {#if error && editing == null}<div class="s-banner">{error}</div>{/if}
@@ -162,7 +163,7 @@
             {#if !isActive}<button class="btn small ghost" type="button" onclick={() => (confirmDelete = d.id)}>Delete</button>{/if}
           </div>
         {/if}
-        <BoardChips device={d} others={devices.list.filter((x) => x.id !== d.id)} />
+        {#if bus.analyzer}<BoardChips device={d} others={devices.list.filter((x) => x.id !== d.id)} />{/if}
       {/if}
     </section>
   {:else}
