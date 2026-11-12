@@ -252,14 +252,20 @@ def test_module_events_on_the_timeline(client):
         assert time.time() < deadline
         time.sleep(0.05)
     t = time.time()
-    items = [{"kind": "i2c", "t": t - 0.01, "end_t": t - 0.009, "data": {"addr": "0x44", "read": 6}}]
+    items = [{"kind": "i2c", "t": t - 0.01, "end_t": t - 0.009, "data": {"addr": "0x44", "read": 6}},
+             {"kind": "i2c", "t": t - 0.21, "data": {"addr": "0x44", "read": 2}}]
     r = client.post("/modules/events", json={"module": "analyzer:1", "items": items}).json()
-    assert r == {"live": 1, "recorded": 0, "skipped": 0}  # no database here: Live only
+    assert r == {"live": 2, "recorded": 0, "skipped": 0}  # no database here: Live only
     live = client.get("/modules/events/live", params={"module": "analyzer"}).json()
     end = client.get("/status").json()["buffer"]["end_idx"]
-    assert len(live) == 1 and live[0]["data"]["addr"] == "0x44" and live[0]["module"] == "analyzer:1"
-    # "now" is a little ahead of the samples received so far (they arrive in chunks): within half a second
-    assert abs(live[0]["start_idx"] - end) < 50_000 and live[0]["end_idx"] - live[0]["start_idx"] == 100  # 1 ms
-    assert client.get("/modules/events/live", params={"after_seq": live[0]["seq"]}).json() == []
+    assert len(live) == 2 and live[0]["data"]["addr"] == "0x44" and live[0]["module"] == "analyzer:1"
+    # Times become stream indexes on the stream's own clock: spacing exact (10 µs per sample), 1 ms = 100 samples
+    # (each time is converted on its own, microseconds apart: a sample either way)
+    assert abs(live[0]["end_idx"] - live[0]["start_idx"] - 100) <= 2
+    assert abs(live[0]["start_idx"] - live[1]["start_idx"] - 20_000) <= 2  # 0.2 s apart
+    # and placed near "now": the samples so far arrive in chunks, and the simulated PPK2 can fall behind the clock
+    # on a busy machine (a real one doesn't), so a generous window
+    assert -50_000 < live[0]["start_idx"] - end < 300_000
+    assert client.get("/modules/events/live", params={"after_seq": live[-1]["seq"]}).json() == []
     assert client.post("/modules/events", json={"module": "Bad Name", "items": []}).status_code == 422
 
