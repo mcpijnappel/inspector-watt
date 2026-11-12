@@ -9,6 +9,8 @@ here, so the same gates apply as for the rest of the API:
 - PUT  /api/modules/<name>/settings         change, check against the module's description, save, pass on
 - POST /api/modules/<name>/events           from the module only (nginx refuses it from outside): onto the timeline
 - GET  /api/modules/<name>/events/live      its latest events (Live page), recording or not
+- GET  /api/modules/<name>/recording        the running recording and its wakes (unix times), for a module that
+                                            works around wakes (the analyzer decodes the bus there)
 - *    /api/modules/<name>/<path>             passed on to the module
 
 Only our own modules (listed in KNOWN) for now; installed means its container answers.
@@ -33,6 +35,8 @@ SETTING_TYPES = ("choice", "number", "bool", "text")
 class EventsIn(BaseModel):
     instance: str = Field("1", min_length=1, max_length=20, pattern=r"^[a-z0-9_-]+$")
     items: list[dict] = Field(max_length=2000)
+    live: bool = True  # into the Live list
+    record: bool = True  # into the running recording
 
 
 def check_settings(described: list[dict], values: dict) -> dict:
@@ -134,7 +138,8 @@ def setup(app: FastAPI, capture: httpx.AsyncClient, get_setting, save_setting) -
         """A module's events (decoded bus transactions, …) with unix times: capture puts them on the timeline."""
         known(name)
         try:
-            r = await capture.post("/modules/events", json={"module": f"{name}:{body.instance}", "items": body.items},
+            r = await capture.post("/modules/events", json={"module": f"{name}:{body.instance}", "items": body.items,
+                                                            "live": body.live, "record": body.record},
                                    timeout=20)
         except httpx.HTTPError as e:
             raise HTTPException(502, f"capture service unreachable: {e}") from e
@@ -145,6 +150,15 @@ def setup(app: FastAPI, capture: httpx.AsyncClient, get_setting, save_setting) -
         known(name)
         try:
             r = await capture.get("/modules/events/live", params={**request.query_params, "module": name})
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"capture service unreachable: {e}") from e
+        return Response(r.content, r.status_code, media_type=r.headers.get("content-type"))
+
+    @app.get("/api/modules/{name}/recording")
+    async def module_recording(name: str, after_seq: int = 0):
+        known(name)
+        try:
+            r = await capture.get("/modules/recording", params={"after_seq": after_seq})
         except httpx.HTTPError as e:
             raise HTTPException(502, f"capture service unreachable: {e}") from e
         return Response(r.content, r.status_code, media_type=r.headers.get("content-type"))

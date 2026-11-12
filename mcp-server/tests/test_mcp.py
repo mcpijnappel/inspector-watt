@@ -50,6 +50,10 @@ def fake_api(calls):
             return httpx.Response(200, json={"id": 7, "status": STATE["answer"]})
         if p == "/api/agents/actions":
             return httpx.Response(200, json={"ok": True})
+        if p == "/api/sessions/2/cycles":
+            return httpx.Response(200, json={"index": 3, "start_s": 180.5, "end_s": 181.25})
+        if p == "/api/sessions/2/bus/named":
+            return httpx.Response(200, json={"messages": [{"t_s": 180.6, "chip": "SHT4x", "kind": "cmd"}], "more": False})
         if p == "/api/devices/active":
             return httpx.Response(200, json={"id": 1, "voltage_mv": 3700})
         if p == "/api/chips" and req.method == "GET":
@@ -170,7 +174,7 @@ def test_says_it_is_the_mcp_server():
 READ_TOOLS = {"list_sessions", "get_session", "range_stats", "current_over_time", "search_log", "list_events",
               "cycle_summary", "get_cycle", "battery_life", "live_status", "live_window", "list_profiles",
               "test_phase_rules", "test_cycle_types", "save_profile", "usb_console_lines", "list_uploads",
-              "chips_list", "chip_get", "chip_save", "board_chips", "set_board_chips", "bus_decode"}
+              "chips_list", "chip_get", "chip_save", "board_chips", "set_board_chips", "bus_decode", "session_bus"}
 
 
 def test_tools_are_registered_with_schemas(calls):
@@ -348,3 +352,10 @@ def test_sensor_library_tools_only_with_a_bus_module(calls):
     server.modules._cached = None
     assert server.LIBRARY_TOOLS <= {t.name for t in run(server.mcp.list_tools())}
     assert run(server.mcp.call_tool("chips_list", {}))
+
+
+def test_session_bus_for_a_cycle(calls):
+    r = run(server.session_bus(2, cycle=3, chip="sht"))
+    assert r["messages"][0]["chip"] == "SHT4x"
+    (_m, _p, q, _b), = [c for c in calls if c[1] == "/api/sessions/2/bus/named"]
+    assert q == {"start_s": "180.5", "end_s": "181.25", "chip": "sht", "limit": "300"}

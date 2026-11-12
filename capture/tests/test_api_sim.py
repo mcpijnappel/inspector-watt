@@ -267,5 +267,9 @@ def test_module_events_on_the_timeline(client):
     # on a busy machine (a real one doesn't), so a generous window
     assert -50_000 < live[0]["start_idx"] - end < 300_000
     assert client.get("/modules/events/live", params={"after_seq": live[-1]["seq"]}).json() == []
+    # for a recording only (the Live list has them from live decoding): not in the Live list
+    r = client.post("/modules/events", json={"module": "analyzer:1", "items": items, "live": False}).json()
+    assert r == {"live": 0, "recorded": 0, "skipped": 0}
+    assert client.get("/modules/events/live", params={"after_seq": live[-1]["seq"]}).json() == []
     assert client.post("/modules/events", json={"module": "Bad Name", "items": []}).status_code == 422
 

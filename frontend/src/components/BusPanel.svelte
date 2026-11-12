@@ -3,16 +3,22 @@
   // stays visible next to it). Messages are grouped per chip (behind an I2C switch: per port), shown as register
   // reads and sets, and repeats fold into one row (lib/busfold.ts). Chip names belong to the board on the bench.
   // The row under the mouse is shaded on the chart. Height and folded state are kept in the browser.
-  import { bus } from '../lib/bus.svelte';
+  // Without `source` it's the Live one (the analyzer's latest messages, "Decode last 30 s"); with it, it shows
+  // messages from elsewhere (a session's stored ones) and names chips on that board.
+  import { bus, type BusSource } from '../lib/bus.svelte';
   import { ax, chipStats, every, fold, hx, leaf, leaves, pollEvery, summary, switchesOf, toItems, type Item, type Node } from '../lib/busfold';
-  import type { Chip, ChipValue } from '../lib/api';
+  import { namer } from '../lib/busnames';
   import { library, onBus } from '../lib/chips.svelte';
   import { devices } from '../lib/devices.svelte';
   import { fmtClock } from '../lib/format';
-  import { evaluate, fmtValue } from '../lib/formula';
   import { live } from '../lib/live.svelte';
   import { outside } from '../lib/outside';
   import { place } from '../lib/place';
+
+  let { source }: { source?: BusSource } = $props();
+  const events = $derived(source ? source.events : bus.events);
+  const chips = $derived(source ? source.chips : bus.chips);
+  const setHover = (h: { a: number; b: number; label: string } | null) => (source ? source.onhover?.(h) : (bus.hover = h));
 
   const H_KEY = 'pst.bus.height', FOLD_KEY = 'pst.bus.folded';
   const MIN_H = 100, MAX_H = 900;
@@ -21,8 +27,8 @@
   let height = $state(Math.min(MAX_H, Math.max(MIN_H, Number(stored(H_KEY)) || 280)));
   let collapsed = $state(stored(FOLD_KEY) === '1');
 
-  $effect(() => (shut ? undefined : bus.use()));
-  $effect(() => { void devices.activeId; void bus.loadChips(); });
+  $effect(() => (shut || source ? undefined : bus.use()));
+  $effect(() => { void devices.activeId; if (!source) void bus.loadChips(); });
   $effect(() => library.ensure());
 
   const MAX_ROWS = 2000, MAX_CHILDREN = 400;
@@ -35,7 +41,7 @@
 
   const health = $derived(bus.analyzer?.module?.health);
   // No analyzer to read (unplugged, starting): just the header bar with the reason, unless there's traffic to look at
-  const idle = $derived(!health?.ok && !bus.events.length);
+  const idle = $derived(!source && !health?.ok && !events.length);
   const shut = $derived(collapsed || idle);
   const v = $derived(bus.analyzer?.values ?? {});
   const wiring = $derived([
@@ -43,18 +49,18 @@
     v.spi_clk !== 'off' ? `SPI on ${[v.spi_clk, v.spi_mosi, v.spi_miso, v.spi_cs].filter((p) => p !== 'off').join('/')}` : null,
   ].filter(Boolean).join(' · ') || 'no bus wired up');
 
-  const msPerIdx = $derived((live.status?.buffer?.sample_period_s ?? 1e-5) * 1000);
-  const switches = $derived(switchesOf(bus.events, bus.chips, library.switchTypes));
+  const msPerIdx = $derived(source ? source.msPerIdx : (live.status?.buffer?.sample_period_s ?? 1e-5) * 1000);
+  const switches = $derived(switchesOf(events, chips, library.switchTypes));
   // the board's SPI chip: with a table from the library its transfers read as register reads and writes
-  const spiFormat = $derived(onBus(library.get(bus.chips.spi?.type), 'spi') as { read_bit: number } | undefined);
-  const allItems = $derived(toItems(bus.events, switches, msPerIdx, showSwitch, spiFormat));
-  const stats = $derived(chipStats(toItems(bus.events, switches, msPerIdx, false, spiFormat)));
+  const spiFormat = $derived(onBus(library.get(chips.spi?.type), 'spi') as { read_bit: number } | undefined);
+  const allItems = $derived(toItems(events, switches, msPerIdx, showSwitch, spiFormat));
+  const stats = $derived(chipStats(toItems(events, switches, msPerIdx, false, spiFormat)));
   const shown = $derived(allItems.filter((it) => !hidden.includes(it.key)));
   const rows = $derived<Node[]>(folded ? fold(shown) : shown.map((it) => ({ it })));
   const total = $derived([...stats.values()].reduce((s, c) => s + c.n, 0));
   type Stat = { n: number; ok: boolean; addr: number | null; port: string | null; missing?: boolean };
   // The board's chips that weren't in this decode: shown as "not seen" (it may be asleep, or not answering).
-  const expected = $derived<[string, Stat][]>(bus.events.length ? Object.keys(bus.chips)
+  const expected = $derived<[string, Stat][]>(events.length ? Object.keys(chips)
     .filter((k) => !stats.has(k) && !(k.startsWith('m:') && switches.has(Number(k.split(':')[1]))))
     .map((k) => { const [p, a] = k.split(':'); return [k, { n: 0, ok: false, addr: k === 'spi' ? null : Number(a), port: p === 'm' || k === 'spi' ? null : p, missing: true }]; }) : []);
   const allStats = $derived<[string, Stat][]>([...stats, ...expected]);
@@ -69,46 +75,12 @@
     if (box) stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 12;
   }
 
-  const clock = (idx: number) => { const w = bus.wallOf(idx); return w == null ? '' : fmtClock(w); };
+  const clock = (idx: number) => { if (source) return source.clock(idx); const w = bus.wallOf(idx); return w == null ? '' : fmtClock(w); };
   const ms = (x: number) => (x >= 1000 ? `${(x / 1000).toFixed(2)} s` : x >= 10 ? `${x.toFixed(0)} ms` : `${x.toFixed(1)} ms`);
-  /** A port not known ('?:16'): the name the port chips at that address share, if they all have the same one. */
-  const sharedName = (addr: number | null) => {
-    const names = new Set(Object.entries(bus.chips).filter(([k]) => /^[0-7]:/.test(k) && Number(k.split(':')[1]) === addr).map(([, c]) => c.name));
-    return names.size === 1 ? [...names][0] : undefined;
-  };
-  /** The chip type from the sensor library (for a port that isn't known: the type the port chips there share). */
-  const typeOf = (key: string, addr: number | null): Chip | undefined => {
-    if (key.startsWith('?:')) {
-      const types = new Set(Object.entries(bus.chips).filter(([k]) => /^[0-7]:/.test(k) && Number(k.split(':')[1]) === addr).map(([, c]) => c.type));
-      return types.size === 1 ? library.get([...types][0]) : undefined;
-    }
-    return library.get(bus.chips[key]?.type);
-  };
-  const nameOf = (key: string, addr: number | null) =>
-    bus.chips[key]?.name || (key.startsWith('?:') ? sharedName(addr) : undefined) || typeOf(key, addr)?.name ||
-    (key.startsWith('m:') && switches.has(addr ?? -1) ? 'I2C switch' : key === 'spi' ? 'SPI' : ax(addr ?? 0));
-  /** What the library knows about this message: the register's or command's name, and readings from its bytes. */
-  function known(it: Item): { name?: string; values: string[] } {
-    // the chip's table for the bus this message was on
-    const t = onBus(typeOf(it.key, it.addr), it.key === 'spi' ? 'spi' : 'i2c');
-    if (!t) return { values: [] };
-    const read = (vals: ChipValue[] | undefined, bytes: number[] | undefined) => (vals ?? []).flatMap((v) => {
-      const x = bytes ? evaluate(v.expr, bytes) : null;
-      return x == null ? [] : [`${fmtValue(x)}${v.unit ? ` ${v.unit}` : ''}`];
-    });
-    if ((it.kind === 'reg' || it.kind === 'set') && t.registers) {
-      // on SPI only the address bits go over the wire (BME280: 0xF7 is sent as 0x77 / 0xF7): compare those
-      const mask = t.bus === 'spi' ? 0xff & ~(t.read_bit ?? 0x80) & ~(t.inc_bit ?? 0) : 0xffff;
-      const r = t.registers.find((x) => (x.addr & mask) === it.reg?.[0]);
-      return { name: r?.name, values: it.kind === 'reg' ? read(r?.values, it.r) : [] };
-    }
-    if ((it.kind === 'cmd' || it.kind === 'write') && t.commands) {
-      const c = t.commands.find((x) => x.code === it.w?.[0]);
-      return { name: c?.name, values: it.kind === 'cmd' ? read(c?.values, it.r) : [] };
-    }
-    return { values: [] };
-  }
-  const nameIn = (it: Item) => known(it).name;
+  const names = $derived(namer(chips, switches));
+  const nameOf = (key: string, addr: number | null) => names.nameOf(key, addr);
+  const known = (it: Item) => names.known(it);
+  const nameIn = (it: Item) => names.nameIn(it);
   const idOf = (n: Node) => `${'loop' in n ? 'L' : 'R'}${leaf(n).key}@${leaf(n).idx}`;
   const toggle = (list: string[], x: string) => (list.includes(x) ? list.filter((y) => y !== x) : [...list, x]);
   const dim = (it: Item) => (it.kind === 'probe' && !it.ok) || it.kind === 'switch';
@@ -131,11 +103,12 @@
     store(H_KEY, String(height));
   }
   // the row under the mouse: shaded on the chart
+  let hovered: { a: number; b: number; label: string } | null = null;
   function hoverRow(e: Event) {
     const r = (e.target as HTMLElement).closest<HTMLElement>('[data-a]');
     if (!r) return;
     const a = Number(r.dataset.a), b = Number(r.dataset.b);
-    if (bus.hover?.a !== a || bus.hover?.b !== b) bus.hover = { a, b, label: r.dataset.label ?? '' };
+    if (hovered?.a !== a || hovered?.b !== b) setHover((hovered = { a, b, label: r.dataset.label ?? '' }));
   }
 
   // naming
@@ -146,8 +119,8 @@
   let saveError = $state('');
   function edit(key: string, addr: number | null, port: string | null) {
     editing = { key, addr, port };
-    draft = bus.chips[key]?.name ?? '';
-    draftType = bus.chips[key]?.type ?? '';
+    draft = chips[key]?.name ?? '';
+    draftType = chips[key]?.type ?? '';
     draftSwitch = addr != null && switches.has(addr) && key.startsWith('m:');
     saveError = '';
   }
@@ -157,7 +130,7 @@
     // a switch by its library type needs no flag; otherwise the checkbox says it (0x70-0x77 only)
     const isSwitchAddr = editing.key.startsWith('m:') && editing.addr != null && editing.addr >= 0x70 && editing.addr <= 0x77 && !typed;
     try {
-      await bus.setChip(editing.key, { name, type: draftType || undefined, ...(isSwitchAddr ? { switch: draftSwitch } : {}) });
+      await (source ? source.setChip ?? (async () => {}) : bus.setChip.bind(bus))(editing.key, { name, type: draftType || undefined, ...(isSwitchAddr ? { switch: draftSwitch } : {}) });
       editing = null;
     } catch (e) {
       saveError = (e as Error).message;
@@ -246,10 +219,10 @@
       <button type="button" class="tog" title="{hidden.includes(key) ? 'Show' : 'Hide'} this chip's messages" onclick={() => (hidden = toggle(hidden, key))}>
         {#if port != null}<span class="pn">{port}</span>{:else}<span class="dot" class:ok></span>{/if}
         <span class="nm">{nameOf(key, addr)}</span>
-        {#if addr != null && port == null && bus.chips[key]?.name}<span class="a">{ax(addr)}</span>{/if}
+        {#if addr != null && port == null && chips[key]?.name}<span class="a">{ax(addr)}</span>{/if}
         {#if n != null}<span class="n" class:hog={pct(n) >= 50}>{n === 0 && !ok ? 'not seen' : ok ? n : 'not found'}{ok && pct(n) >= 20 ? ` · ${pct(n)} %` : ''}</span>{/if}
       </button>
-      {#if (addr != null || key === 'spi') && port !== '?'}<button type="button" class="ed" title="Name this chip" aria-label="Name {addr != null ? ax(addr) : 'the SPI chip'}" onclick={() => edit(key, addr, port)}>✎</button>{/if}
+      {#if (addr != null || key === 'spi') && port !== '?' && (!source || source.setChip)}<button type="button" class="ed" title="Name this chip" aria-label="Name {addr != null ? ax(addr) : 'the SPI chip'}" onclick={() => edit(key, addr, port)}>✎</button>{/if}
     </span>
     {#if editing?.key === key}
       {@const a = editing.addr}
@@ -270,11 +243,11 @@
         {#if editing.port == null && a != null && a >= 0x70 && a <= 0x77 && !library.get(draftType)}
           <label class="check"><input type="checkbox" bind:checked={draftSwitch} /> I2C switch: its writes open ports</label>
         {/if}
-        <p class="hint">Kept with {devices.active?.name ?? 'the board on the bench'} (Settings → Devices & sensors). Tables: <a href="#/settings/library">Sensor library</a>.</p>
+        <p class="hint">Kept with {source ? source.board ?? 'this board' : devices.active?.name ?? 'the board on the bench'} (Settings → Devices & sensors). Tables: <a href="#/settings/library">Sensor library</a>.</p>
         {#if saveError}<p class="error">{saveError}</p>{/if}
         <div class="actions">
           <button class="btn small ghost" type="button" onclick={() => (editing = null)}>Cancel</button>
-          <button class="btn small primary" type="submit" disabled={devices.activeId == null}>Save</button>
+          <button class="btn small primary" type="submit" disabled={!source && devices.activeId == null}>Save</button>
         </div>
       </form>
     {/if}
@@ -290,24 +263,31 @@
     {#if !idle}<button class="btn small ghost icon" type="button" aria-expanded={!collapsed} aria-label={collapsed ? 'Open the bus panel' : 'Fold the bus panel'}
       title={collapsed ? 'Open' : 'Fold to this bar'} onclick={() => { collapsed = !collapsed; store(FOLD_KEY, collapsed ? '1' : '0'); }}>{collapsed ? '▸' : '▾'}</button>{/if}
     <h2>Bus</h2>
-    <span class="state" title={health?.detail ?? ''}><span class="dot" class:ok={health?.ok} class:warn={!health?.ok}></span>{health?.ok ? wiring : health?.detail ?? 'starting'} · <a href="#/settings/modules">settings</a></span>
-    {#if collapsed && bus.events.length}<span class="faint small">{bus.events.length} messages</span>{/if}
+    {#if source}
+      <span class="state">{source.status}</span>
+    {:else}
+      <span class="state" title={health?.detail ?? ''}><span class="dot" class:ok={health?.ok} class:warn={!health?.ok}></span>{health?.ok ? wiring : health?.detail ?? 'starting'} · <a href="#/settings/modules">settings</a></span>
+    {/if}
+    {#if collapsed && events.length}<span class="faint small">{events.length} messages</span>{/if}
     <span class="spacer"></span>
-    {#if !collapsed && bus.events.length}<button class="btn small ghost" type="button" onclick={() => { bus.clear(); open = []; }}>Clear</button>{/if}
-    <div class="decode">
+    {#if !source && !collapsed && events.length}<button class="btn small ghost" type="button" onclick={() => { bus.clear(); open = []; }}>Clear</button>{/if}
+    {#if !source}<label class="opt live" title={health?.ok ? 'Decode the newest second, every second, while this page is open (about 1-2 s behind). Off: only when you press Decode.' : health?.detail ?? ''}>
+      <input type="checkbox" checked={bus.live} disabled={!health?.ok} onchange={(e) => { bus.setLive((e.target as HTMLInputElement).checked); if (bus.live) collapsed = false; }} /> Live</label>{/if}
+    {#if !source}<div class="decode">
       <button class="btn small" type="button" disabled={bus.busy || !health?.ok} onclick={() => { collapsed = false; void bus.decode(30); }}
         title={health?.ok ? 'Decode everything the analyzer kept: the last 30 seconds' : health?.detail ?? ''}>{bus.busy ? 'Decoding…' : 'Decode last 30 s'}</button>
       <button class="btn small ghost" type="button" disabled={bus.busy || !health?.ok} onclick={() => { collapsed = false; void bus.decode(5); }}
         title="Decode only the last 5 seconds (quicker)">5 s</button>
-    </div>
+    </div>{/if}
   </div>
 
   {#if !shut}
-    {#if bus.error}<div class="note err">{bus.error}</div>{/if}
+    {#if !source && bus.error}<div class="note err">{bus.error}</div>{/if}
 
-    {#if !bus.events.length}
+    {#if !events.length}
       <div class="closed" style:height="{height}px">
-        <p>I2C and SPI on the board's pins, decoded by the logic analyzer. <strong>Decode last 30 s</strong> looks at what just happened; during recordings each wake will be decoded by itself, and the transactions are kept with the session.</p>
+        {#if source}<p>{source.empty}</p>
+        {:else}<p>I2C and SPI on the board's pins, decoded by the logic analyzer. <strong>Decode last 30 s</strong> looks at what just happened, <strong>Live</strong> keeps decoding while this page is open; during a recording each wake is decoded by itself (Settings → Modules: Decode in recordings), and the messages are kept with the session.</p>{/if}
       </div>
     {:else}
       <div class="bar">
@@ -323,16 +303,18 @@
           {/each}
         </div>
         <div class="opts">
-          {#if bus.last}<span>{(bus.last.to - bus.last.from).toFixed(0)} s: {bus.last.found} messages{folded ? ` → ${rows.length} rows` : ''}{bus.last.truncated ? ' (cut off: a pin may be noisy, check the wiring)' : ''}</span>{/if}
+          {#if source?.summary}<span>{source.summary}{folded ? ` → ${rows.length} rows` : ''}</span>{/if}
+          {#if !source && bus.last}<span>{(bus.last.to - bus.last.from).toFixed(0)} s: {bus.last.found} messages{folded ? ` → ${rows.length} rows` : ''}{bus.last.truncated ? ' (cut off: a pin may be noisy, check the wiring)' : ''}</span>{/if}
           <label class="opt"><input type="checkbox" bind:checked={folded} /> Fold loops and runs</label>
           {#if switches.size}<label class="opt"><input type="checkbox" bind:checked={showSwitch} /> Switch port writes</label>{/if}
-          {#if devices.activeId == null}<span class="hint">Pick the board on the bench to name chips</span>{/if}
+          {#if !source && devices.activeId == null}<span class="hint">Pick the board on the bench to name chips</span>{/if}
+          {#if source && !source.setChip}<span class="hint">This recording has no board: chips can't be named here</span>{/if}
         </div>
       </div>
       <!-- The shading on the chart is extra: hover, or focus a folded row with the keyboard -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="lines mono" style:height="{height}px" bind:this={box} {onscroll} onmouseover={hoverRow} onfocusin={hoverRow}
-        onmouseleave={() => (bus.hover = null)} onfocusout={() => (bus.hover = null)}>
+        onmouseleave={() => setHover((hovered = null))} onfocusout={() => setHover((hovered = null))}>
         {#each rows.slice(0, MAX_ROWS) as n, i (i)}{@render node(n)}{/each}
         {#if rows.length > MAX_ROWS}<div class="more">… and {rows.length - MAX_ROWS} more rows</div>{/if}
       </div>
@@ -349,6 +331,7 @@
   .state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); min-width: 0; }
   .small { font-size: 12px; }
   .decode { display: inline-flex; gap: 4px; }
+  .opt.live { font-size: 12px; color: var(--muted); }
   .bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; justify-content: space-between; padding: 7px 14px; border-bottom: 1px solid var(--line); }
   .note { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
   .note.err { color: var(--rec); }

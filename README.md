@@ -252,7 +252,7 @@ it on (below). It never flashes firmware and can't see the upload token.
 Tools: `list_sessions`, `get_session`, `range_stats`, `current_over_time`, `search_log`, `list_events`,
 `cycle_summary`, `get_cycle`, `battery_life`, `live_status`, `live_window`, `usb_console_lines`,
 `list_uploads`, `list_profiles`, `test_phase_rules`, `test_cycle_types`, `save_profile`, `chips_list`, `chip_get`,
-`board_chips`, `bus_decode`. Units: A, C, seconds since the session start.
+`board_chips`, `bus_decode`, `session_bus`. Units: A, C, seconds since the session start.
 
 **Sensor library** (Settings → Devices & sensors → Sensor library): chip tables shared by every board, one
 entry per bus a chip talks on (I2C addresses, or SPI's read/write bit), each with its own registers or commands and

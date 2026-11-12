@@ -109,6 +109,8 @@ class ModuleEventIn(BaseModel):
 class ModuleEventsIn(BaseModel):
     module: str = Field(min_length=1, max_length=60, pattern=r"^[a-z0-9_-]+(:[a-z0-9_-]+)?$")  # "analyzer:1"
     items: list[ModuleEventIn] = Field(max_length=2000)
+    live: bool = True  # into the Live list
+    record: bool = True  # into the running recording
 
 
 class ChoiceIn(BaseModel):
@@ -321,7 +323,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/modules/events")
     def add_module_events(body: ModuleEventsIn):
-        return module_events.add(body.module, [it.model_dump() for it in body.items])
+        return module_events.add(body.module, [it.model_dump() for it in body.items], body.live, body.record)
+
+    @app.get("/modules/recording")
+    def module_recording(after_seq: int = 0):
+        """For modules: the running recording and its wakes (unix times), to decode the bus around each."""
+        if sessions is None:
+            return {"recording": None, "wakes": [], "last_seq": 0}
+        return sessions.wake_feed(after_seq)
 
     @app.get("/modules/events/live")
     def live_module_events(after_seq: int = 0, module: str | None = None, since_idx: int | None = None,

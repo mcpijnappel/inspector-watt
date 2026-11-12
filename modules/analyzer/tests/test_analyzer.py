@@ -145,8 +145,8 @@ def test_noisy_pins_are_capped_and_posted_in_batches(monkeypatch):
 
         def json(self):
             return {"live": self.n, "recorded": 0, "skipped": 0}
-    monkeypatch.setattr(m.httpx, "post", lambda url, json, timeout: sent.append(len(json["items"])) or Resp(len(json["items"])))
-    assert a.post_events(r["items"]) == {"live": 3, "recorded": 0, "skipped": 0} and sent == [2, 1]
+    monkeypatch.setattr(m.httpx, "post", lambda url, json, timeout: sent.append((len(json["items"]), json["live"], json["record"])) or Resp(len(json["items"])))
+    assert a.post_events(r["items"]) == {"live": 3, "recorded": 0, "skipped": 0} and sent == [(2, True, True), (1, True, True)]
 
 
 def test_settings_restart_the_stream_and_check_wiring():
@@ -209,3 +209,137 @@ def test_real_stream_from_the_demo_device():
     finally:
         s.stop()
     assert not s.running
+
+
+# decoding during a recording (follow.py) ------------------------------------------------------------------------
+def test_quiet_means_no_edge_on_a_bus_pin():
+    w = {"i2c_sda": "D0", "i2c_scl": "D1"}
+    assert dec.quiet(b"\x03" * 100, w) and dec.quiet(b"\x03\x07\x03\xff", w)  # D2 and up aren't wired
+    assert not dec.quiet(b"\x03\x01\x03", w) and dec.quiet(b"\x03\x01", {"i2c_sda": "off", "i2c_scl": "off"})
+
+
+IDLE = b"\x03" * 400_000  # both I2C lines high: 0.4 s at 1 MHz
+
+
+def follower(data, monkeypatch, record="wakes"):
+    """A module streaming `data` (sample 0 at unix 1000, 1 MHz) that records what it sends to the api."""
+    c, a = module(sigrok.parse_scan(FX2), data)
+    a.values.update(samplerate_hz=1_000_000, record=record)
+    a.check()
+    sent = []
+    flags = []
+
+    def post(items, live=True, record=True):
+        flags.append((live, record))
+        sent.extend(items)
+        return {"live": len(items)}
+    monkeypatch.setattr(a, "post_events", post)
+    a.flags = flags
+    f = a.follower
+    f.step({"recording": None, "wakes": [], "last_seq": 0})  # the module was up before the recording started
+    return a, f, sent
+
+
+def rec(**kw):
+    return {"recording": {"id": 7, "started_t": 1000.0, "stopped_t": None, "processed_t": 1000.6, **kw},
+            "open_start_t": None, "wakes": [], "last_seq": 0}
+
+
+def test_decodes_around_each_wake(monkeypatch):
+    sig = i2c(SHT40_READ, idle=100_000) + IDLE  # transactions at ~0.10 and ~0.20 s, 0.7 s in all
+    a, f, sent = follower(sig, monkeypatch)
+    t_cmd = 1000.0 + 100_000 / 1e6
+    # a wake 0.09-0.15 s: its window (50 ms before, 100 ms after) holds the command and its answer
+    f.step({**rec(), "wakes": [{"seq": 1, "session_id": 7, "start_t": t_cmd - 0.01, "end_t": t_cmd + 0.05}], "last_seq": 1})
+    msgs = [i for i in sent if i["kind"] == "i2c"]
+    assert [m["data"]["label"] for m in msgs] == ["0x44 W1", "0x44 R6"] and abs(msgs[0]["t"] - t_cmd) < 0.001
+    (win,) = [i for i in sent if i["kind"] == "bus_window"]
+    assert win["t"] == pytest.approx(t_cmd - 0.06) and win["end_t"] == pytest.approx(t_cmd + 0.15)
+    assert win["data"]["messages"] == 2 and f.after_seq == 1 and f.counts["windows"] == 1
+    sent.clear()
+    f.step({**rec(), "last_seq": 1})  # nothing new: nothing decoded twice
+    assert sent == [] and f.windows == []
+
+
+def test_waits_for_a_wake_window_to_pass(monkeypatch):
+    a, f, sent = follower(IDLE, monkeypatch)  # the buffer holds 1000.0-1000.4
+    f.step({**rec(), "wakes": [{"seq": 1, "session_id": 7, "start_t": 1000.1, "end_t": 1000.2}], "last_seq": 1})
+    assert sent == [] and f.windows == [[pytest.approx(1000.05), pytest.approx(1000.3)]]  # needs data up to 1000.3 + margin
+
+
+def test_a_running_wake_and_all_of_it_go_in_pieces_without_doubles(monkeypatch):
+    import pst_analyzer.follow as fw
+    monkeypatch.setattr(fw, "PIECE_S", 0.03)  # cuts right through the messages
+    sig = i2c(SHT40_READ * 3, idle=20_000) + IDLE * 2
+    a, f, sent = follower(sig, monkeypatch, record="all")
+    f.step(rec())
+    msgs = [i for i in sent if i["kind"] == "i2c"]
+    assert len(msgs) == 6 and len({m["t"] for m in msgs}) == 6
+    wins = [i for i in sent if i["kind"] == "bus_window"]
+    assert wins[0]["t"] == 1000.0 and all(x["end_t"] == pytest.approx(y["t"]) for x, y in zip(wins, wins[1:]))
+    assert f.counts["quiet"] > 0  # the idle stretch at the end needs no sigrok
+    # a wake still going on: decoded up to what has arrived
+    a2, f2, sent2 = follower(sig, monkeypatch)
+    f2.step({**rec(), "open_start_t": 1000.01})
+    assert len([i for i in sent2 if i["kind"] == "i2c"]) == 6 and f2.done_t > 1000.2
+
+
+def test_missed_windows_say_why(monkeypatch):
+    a, f, sent = follower(IDLE, monkeypatch)
+    a.streamer.running = False  # unplugged
+    a.error = "no analyzer found"
+    f.step({**rec(), "wakes": [{"seq": 1, "session_id": 7, "start_t": 1000.1, "end_t": 1000.2}], "last_seq": 1})
+    (win,) = sent
+    assert win["kind"] == "bus_window" and win["data"]["missed"] == "no analyzer found" and f.counts["missed"] == 1
+    # left the buffer: the buffer now starts at 1000.0, the wake was before it
+    a, f, sent = follower(IDLE, monkeypatch)
+    f.step({**rec(), "wakes": [{"seq": 1, "session_id": 7, "start_t": 999.0, "end_t": 999.5}], "last_seq": 1})
+    assert "left the analyzer's buffer" in sent[0]["data"]["missed"] and sent[0]["end_t"] == 999.6
+
+
+def test_joining_a_running_recording_starts_from_now_and_a_stop_finishes(monkeypatch):
+    a, f, sent = follower(IDLE, monkeypatch)
+    f.fresh = True  # the module just started, a recording is running
+    f.step({**rec(processed_t=1000.2), "wakes": [{"seq": 3, "session_id": 7, "start_t": 1000.05, "end_t": 1000.1}], "last_seq": 3})
+    assert sent == [] and f.done_t == 1000.2  # that wake may have been decoded before the restart
+    f.step({**rec(stopped_t=1000.3, processed_t=1000.3), "wakes": [], "last_seq": 3})
+    assert f.finished and "recording 7" in a.health()["detail"]
+    f.step({"recording": None, "wakes": [], "last_seq": 3})
+    assert f.session is None and a.follower.status()["session"] is None
+
+
+def test_off_decodes_nothing(monkeypatch):
+    a, f, sent = follower(i2c(SHT40_READ, idle=100_000) + IDLE, monkeypatch, record="off")
+    f.step({**rec(), "wakes": [{"seq": 1, "session_id": 7, "start_t": 1000.09, "end_t": 1000.15}], "last_seq": 1})
+    assert sent == [] and f.session is None and f.after_seq == 1
+
+
+def test_live_decoding_is_live_only_and_a_lease(monkeypatch):
+    sig = i2c(SHT40_READ, idle=100_000) + IDLE
+    a, f, sent = follower(sig, monkeypatch)
+    c = TestClient(create_app(a, background=False))
+    f.live_step()
+    assert sent == []  # off until the Live page asks
+    assert c.post("/live", json={"on": True}).json() == {"live": True, "lease_s": 30.0}
+    assert c.get("/status").json()["live"] and "decoding live" in a.health()["detail"]
+    f.live_step()  # the last second that has arrived: the buffer ends at 1000.7
+    assert [i["data"]["label"] for i in sent] == ["0x44 W1", "0x44 R6"] and a.flags == [(True, False)]
+    done = f.live_done
+    f.live_step()
+    assert len(sent) == 2 and f.live_done == done  # nothing new arrived
+    # a recording meanwhile: its windows go only into the recording (the live list has them already)
+    f.step({**rec(), "wakes": [{"seq": 1, "session_id": 7, "start_t": 1000.09, "end_t": 1000.15}], "last_seq": 1})
+    assert a.flags[-1] == (False, True)
+    assert c.post("/live", json={"on": False}).json()["live"] is False and f.live_done is None
+    a.live_until = 1.0  # a lease that ran out (monotonic)
+    f.live_step()
+    assert not a.live_on()
+
+
+def test_decode_button_goes_into_a_recording_only_when_it_doesnt_decode_itself(monkeypatch):
+    a, f, sent = follower(i2c(SHT40_READ, idle=100_000) + IDLE, monkeypatch)
+    c = TestClient(create_app(a, background=False))
+    c.post("/decode", json={"seconds": 1})
+    a.values["record"] = "off"
+    c.post("/decode", json={"seconds": 1})
+    assert a.flags == [(True, False), (True, True)]

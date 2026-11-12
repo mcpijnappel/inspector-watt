@@ -35,7 +35,7 @@
     }
   }
   const fmtChoice = (s: ModuleSetting, v: number | string) =>
-    s.unit === 'Hz' && typeof v === 'number' ? (v >= 1e6 ? `${v / 1e6} MHz` : `${v / 1e3} kHz`) : `${v}${s.unit ? ` ${s.unit}` : ''}`;
+    s.choice_labels?.[String(v)] ?? (s.unit === 'Hz' && typeof v === 'number' ? (v >= 1e6 ? `${v / 1e6} MHz` : `${v / 1e3} kHz`) : `${v}${s.unit ? ` ${s.unit}` : ''}`);
   function saveNumber(e: SubmitEvent, m: ModuleInfo, s: ModuleSetting) {
     e.preventDefault();
     const v = parseFloat((drafts[`${m.name}.${s.key}`] ?? '').replace(',', '.'));

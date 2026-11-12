@@ -129,6 +129,78 @@ def check_formula(expr: str) -> int:
     return need
 
 
+def _byte_fn(fn: str, b: list[int], i: int) -> int | None:
+    w = BYTE_FUNCS[fn]
+    if i + w > len(b):
+        return None
+    x = b[i:i + w]
+    if fn in ("u8", "s8"):
+        v = x[0]
+    elif fn.endswith("le"):
+        v = int.from_bytes(bytes(x), "little")
+    else:
+        v = int.from_bytes(bytes(x), "big")
+    signed = fn.startswith("s")
+    return v - (1 << (8 * w)) if signed and v >= 1 << (8 * w - 1) else v
+
+
+def evaluate(expr: str, data: list[int]) -> float | None:
+    """A value formula over the bytes that came back (as the web UI's formula.ts does), or None: not a formula, too
+    few bytes, or a division by zero."""
+    toks = [m.group(1) or m.group(2) or m.group(3) for m in TOKEN.finditer(expr) if m.group(0).strip()]
+    i = 0
+
+    class Bad(Exception):
+        pass
+
+    def take(want=None):
+        nonlocal i
+        if i >= len(toks) or (want is not None and toks[i] != want):
+            raise Bad
+        i += 1
+        return toks[i - 1]
+
+    def atom() -> float:
+        t = take()
+        if t == "(":
+            v = add()
+            take(")")
+            return v
+        if t == "-":
+            return -atom()
+        if t[0].isdigit():
+            return float(t)
+        if t in BYTE_FUNCS:
+            take("(")
+            idx = take()
+            take(")")
+            if not idx.isdigit():
+                raise Bad
+            v = _byte_fn(t, data, int(idx))
+            if v is None:
+                raise Bad
+            return float(v)
+        raise Bad
+
+    def mul() -> float:
+        v = atom()
+        while i < len(toks) and toks[i] in ("*", "/"):
+            v = v * atom() if take() == "*" else v / atom()
+        return v
+
+    def add() -> float:
+        v = mul()
+        while i < len(toks) and toks[i] in ("+", "-"):
+            v = v + mul() if take() == "+" else v - mul()
+        return v
+
+    try:
+        v = add()
+    except (Bad, ZeroDivisionError):
+        return None
+    return v if i == len(toks) else None
+
+
 class Value(BaseModel):
     name: str = Field(min_length=1, max_length=32)
     unit: str = Field("", max_length=16)

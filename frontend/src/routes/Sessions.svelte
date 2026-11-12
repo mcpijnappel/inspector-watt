@@ -1,6 +1,6 @@
 <script lang="ts">
   import Sparkline from '../components/Sparkline.svelte';
-  import { api, type SessionSummary } from '../lib/api';
+  import { api, moduleBadges, type SessionSummary } from '../lib/api';
   import { fmtAmps, fmtBytes, fmtCharge, fmtSpan, fmtStarted } from '../lib/format';
   import { devices } from '../lib/devices.svelte';
   import { live } from '../lib/live.svelte';
@@ -107,6 +107,7 @@
               <a class="name" href="#/sessions/{s.id}">{s.name}</a>
               {#if s.status === 'running'}<span class="badge rec">{s.id === recordingId ? 'recording' : 'running'}</span>{/if}
               {#if s.status === 'interrupted'}<span class="badge warn">interrupted</span>{/if}
+              {#each moduleBadges(s.modules) as b (b.label)}<span class="badge mod" title={b.title}>{b.label}</span>{/each}
               {#if s.notes || (s.device_name && devices.list.length > 1)}<div class="notes">{[devices.list.length > 1 ? s.device_name : null, s.notes].filter(Boolean).join(' · ')}</div>{/if}
             </td>
             <td><span class="badge {s.kind}">{s.kind}</span></td>
@@ -168,6 +169,7 @@
   .badge.soak { color: #a371f7; background: rgba(163, 113, 247, 0.14); }
   .badge.rec { color: var(--rec); background: var(--rec-bg); }
   .badge.warn { color: var(--warn); background: rgba(227, 179, 65, 0.14); }
+  .badge.mod { color: var(--flash); background: var(--flash-bg); font-weight: 500; }
   .act { width: 1%; white-space: nowrap; text-align: right; padding-right: 16px; }
   .confirm { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
   :global(.btn.danger) { background: var(--rec-strong); border-color: var(--rec-strong); color: #fff; }

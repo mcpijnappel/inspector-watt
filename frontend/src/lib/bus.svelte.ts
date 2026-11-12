@@ -10,6 +10,8 @@ const MAX_EVENTS = 6000; // a decode sends up to 5000
 const POLL_MS = 1000;
 const MODULES_EVERY_MS = 30000;
 const WAITING_EVERY_MS = 5000; // installed and on, but no analyzer streaming (yet)
+const LIVE_RENEW_MS = 10000; // live decoding is a 30 s lease in the module: renewed while a page shows the bus
+const LIVE_KEY = 'pst.bus.live';
 
 export type BusEvent = {
   seq: number;
@@ -25,6 +27,25 @@ export type BusEvent = {
     mosi?: number[];
     miso?: number[];
   };
+};
+
+export type BusSource = {
+  events: BusEvent[];
+  chips: Chips;
+  msPerIdx: number;
+  /** The time shown on a row, from its index. */
+  clock: (idx: number) => string;
+  /** In the head, where Live shows the analyzer's state. */
+  status: string;
+  /** In the bar: how many messages, and from where. */
+  summary?: string;
+  /** No messages: why (nothing decoded here, the analyzer was off, ...). */
+  empty: string;
+  /** Name a chip on the board the messages came from; none: they can't be named here. */
+  setChip?: (key: string, chip: Chip) => Promise<void>;
+  board?: string;
+  /** The row under the mouse: its span in indexes, for the chart. */
+  onhover?: (h: { a: number; b: number; label: string } | null) => void;
 };
 
 export type DecodeResult = { from: number; to: number; samples: number; decode_s: number; found: number; truncated: boolean };
@@ -45,8 +66,12 @@ class Bus {
   /** The bus row under the mouse: its span in stream indexes and a label, shaded on the current chart. */
   hover = $state<{ a: number; b: number; label: string } | null>(null);
 
+  /** Decode live (the newest second, every second) while a page shows the bus; off by default, kept in the browser. */
+  live = $state(((): boolean => { try { return localStorage.getItem(LIVE_KEY) === '1'; } catch { return false; } })());
+
   private seq = 0;
   private users = 0;
+  private liveTimer: ReturnType<typeof setInterval> | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
   private modTimer: ReturnType<typeof setTimeout> | undefined;
   private watchers = 0;
@@ -80,10 +105,31 @@ class Bus {
     if (this.users++ === 0) {
       void this.poll();
       this.timer = setInterval(() => void this.poll(), POLL_MS);
+      this.syncLive();
     }
     return () => {
-      if (--this.users === 0) clearInterval(this.timer);
+      if (--this.users === 0) {
+        clearInterval(this.timer);
+        this.syncLive();
+      }
     };
+  }
+
+  setLive(on: boolean) {
+    this.live = on;
+    try { localStorage.setItem(LIVE_KEY, on ? '1' : '0'); } catch { /* private window */ }
+    if (!on) void api.analyzerLive(false).catch(() => {});
+    this.syncLive();
+  }
+
+  /** Keep the module's live lease while it's wanted and a page shows the bus; it runs out by itself otherwise. */
+  private syncLive() {
+    clearInterval(this.liveTimer);
+    this.liveTimer = undefined;
+    if (!this.live || this.users === 0) return;
+    const renew = () => void api.analyzerLive(true).catch(() => {});
+    renew();
+    this.liveTimer = setInterval(renew, LIVE_RENEW_MS);
   }
 
   private async poll() {
