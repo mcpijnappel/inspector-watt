@@ -55,7 +55,8 @@ Sensor library (with the logic analyzer module): chip tables shared by every boa
 entry per bus (I2C, SPI) with its own registers or commands and formulas that turn bytes into readings, so the Bus
 panel names what it decodes. To add
 a chip from its datasheet: chips_list / chip_get, then chip_save (the user checks it later); put it on the board with
-set_board_chips; bus_decode shows what the board really sends, to check the table against.
+set_board_chips; bus_decode shows what the board really sends, to check the table against. During a recording the
+analyzer decodes the bus around each wake by itself: session_bus reads a session's messages, named the same way.
 
 Start with list_sessions, then get_session / cycle_summary / search_log. For "what is the device doing now",
 use live_status and live_window. To add phases: search_log for the lines, test_phase_rules, then save_profile.
@@ -66,7 +67,7 @@ HARDWARE_TOOLS = {"dut_power", "power_cycle", "set_voltage", "measuring", "start
 
 
 # The sensor library and a board's chips: only with a module that decodes buses (the logic analyzer).
-LIBRARY_TOOLS = {"chips_list", "chip_get", "chip_save", "board_chips", "set_board_chips", "bus_decode"}
+LIBRARY_TOOLS = {"chips_list", "chip_get", "chip_save", "board_chips", "set_board_chips", "bus_decode", "session_bus"}
 
 
 class TrackerMCP(FastMCP):
@@ -578,6 +579,29 @@ async def bus_decode(seconds: Annotated[float, Field(gt=0, le=30, description="H
         pass
     return {"seconds": seconds, "found": r.get("found"), "shown": len(out), "truncated": r.get("truncated") or len(items) > 400,
             "messages": out, "board_chips": chips}
+
+
+@mcp.tool()
+async def session_bus(
+    session_id: SessionId,
+    start_s: StartS = None, end_s: EndS = None,
+    cycle: Annotated[int | None, Field(ge=0, description="One cycle (index from 0, as cycle_summary / get_cycle count "
+                                                         "them) instead of start_s / end_s")] = None,
+    cycle_type: Annotated[str | None, Field(description="The cycle's type (default: all wakes)")] = None,
+    chip: Annotated[str | None, Field(description="Only chips whose name, type or place contains this, e.g. VEML "
+                                                  "or port 2")] = None,
+    limit: Annotated[int, Field(ge=1, le=2000)] = 300,
+) -> dict:
+    """The I2C / SPI messages the logic analyzer decoded during a recording (around each wake, or all of it), read
+    only. Each message: time (t_s, session seconds), chip (its name on the board, else its type), where it sits
+    (m:0x44 on the main bus, port 2:0x10 behind the I2C switch), kind (reg = register read, set = register write,
+    cmd = command and its answer, probe, read, write, spi), the register or command name and readings from the
+    sensor library, and the bytes. The same message repeated in a row is one entry with times, every_ms and the last
+    reading. decoded.missed: stretches the analyzer couldn't decode (and why)."""
+    if cycle is not None:
+        c = await api.get(f"/api/sessions/{session_id}/cycles", type=cycle_type, index=cycle)
+        start_s, end_s = c["start_s"], c["end_s"]
+    return await api.get(f"/api/sessions/{session_id}/bus/named", start_s=start_s, end_s=end_s, chip=chip, limit=limit)
 
 
 # the board's USB console and firmware uploads (read-only) ---------------------------------------------------------

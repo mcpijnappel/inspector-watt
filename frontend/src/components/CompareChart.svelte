@@ -8,6 +8,7 @@
   import { theme } from '../lib/theme.svelte';
   import type { Range } from '../lib/live.svelte';
   import type { ChartBand, Series } from '../lib/types';
+  import type { ChartScale } from '../lib/lanes';
 
   type Props = {
     a: Series;
@@ -24,8 +25,12 @@
     /** Mouse over the chart: x under it, or null when it leaves. */
     onhover?: (x: number | null) => void;
     height?: number;
+    /** A bus message under the mouse in the chip lanes: shaded, with its label. */
+    shade?: { a: number; b: number; label?: string } | null;
+    /** The x scale and plot area changed (the chip lanes line up with it). */
+    onscale?: (s: ChartScale) => void;
   };
-  let { a, b, version, log = true, stripsA = [], stripsB = [], view, onzoom, cursorX = null, onhover, height = 360 }: Props = $props();
+  let { a, b, version, log = true, stripsA = [], stripsB = [], view, onzoom, cursorX = null, onhover, height = 360, shade = null, onscale }: Props = $props();
 
   let host: HTMLDivElement;
   let plot: uPlot | null = null;
@@ -41,7 +46,43 @@
     return [j[0], (j[1] as (number | null)[]).map(clamp), (j[2] as (number | null)[]).map(clamp)] as uPlot.AlignedData;
   }
 
+  let lastScale = '';
+  function tellScale(u: uPlot) {
+    if (!onscale) return;
+    const dpr = devicePixelRatio || 1;
+    const s = { min: u.scales.x.min ?? 0, max: u.scales.x.max ?? 1, left: u.bbox.left / dpr, width: u.bbox.width / dpr };
+    const key = `${s.min}|${s.max}|${s.left}|${s.width}`;
+    if (key !== lastScale) {
+      lastScale = key;
+      onscale(s);
+    }
+  }
+
+  function drawShade(u: uPlot) {
+    if (!shade) return;
+    const ctx = u.ctx;
+    const dpr = devicePixelRatio || 1;
+    const { top, left, width, height: h } = u.bbox;
+    const start = u.valToPos(shade.a, 'x', true);
+    const x0 = Math.max(left, start);
+    const x1 = Math.min(left + width, Math.max(u.valToPos(shade.b, 'x', true), start + 3 * dpr));
+    if (x1 <= x0) return;
+    ctx.save();
+    ctx.fillStyle = css('--flash-bg');
+    ctx.fillRect(x0, top, x1 - x0, h);
+    ctx.fillStyle = css('--flash');
+    if (start >= left) ctx.fillRect(Math.round(start), top, Math.max(1, 1.5 * dpr), h);
+    if (shade.label) {
+      ctx.font = `600 ${11 * dpr}px ${css('--font') || 'sans-serif'}`;
+      ctx.textBaseline = 'top';
+      const tw = ctx.measureText(shade.label).width;
+      ctx.fillText(shade.label, Math.min(start + 5 * dpr, left + width - tw - 2 * dpr), top + 4 * dpr);
+    }
+    ctx.restore();
+  }
+
   function drawStrips(u: uPlot) {
+    tellScale(u);
     const ctx = u.ctx;
     const dpr = devicePixelRatio || 1;
     const { top, left, width, height: h } = u.bbox;
@@ -128,6 +169,7 @@
         { ...axis, size: 72, ...(log ? { splits: decades } : {}), values: (_u, s) => (log && decadeTicks.length === s.length ? decadeTicks : s).map((v) => fmtAmpsAxis(v)) },
       ],
       hooks: {
+        drawClear: [drawShade],
         draw: [drawStrips],
         setCursor: [
           (u) => {
@@ -188,6 +230,7 @@
     void stripsA;
     void stripsB;
     void cursorX;
+    void shade;
     untrack(() => plot?.redraw(false));
   });
 

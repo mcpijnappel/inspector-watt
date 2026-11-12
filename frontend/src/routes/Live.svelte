@@ -4,6 +4,9 @@
   import LogPanel from '../components/LogPanel.svelte';
   import UsbConsole from '../components/UsbConsole.svelte';
   import BusPanel from '../components/BusPanel.svelte';
+  import ChipLanes from '../components/ChipLanes.svelte';
+  import { lanesFor, lanesPref, setLanesPref, type ChartScale } from '../lib/lanes';
+  import { library } from '../lib/chips.svelte';
   import { bus } from '../lib/bus.svelte';
   import ControlStrip from '../components/ControlStrip.svelte';
   import { api, type ResetGroup } from '../lib/api';
@@ -59,7 +62,17 @@
   const lifeAvg = $derived(sessionAvg ?? stats?.win ?? null);
 
   /** The bus row under the mouse (Bus panel), shaded on the chart. */
-  const busHighlight = $derived(bus.hover ? [{ a: bus.hover.a * PERIOD, b: bus.hover.b * PERIOD, label: bus.hover.label }] : []);
+  const busLit = $derived(bus.hover ? { a: bus.hover.a * PERIOD, b: bus.hover.b * PERIOD, label: bus.hover.label } : null);
+  // chip lanes under the chart: the decoded messages in the window, a tick each
+  let showLanes = $state(lanesPref());
+  let scale = $state<ChartScale | null>(null);
+  let laneHover = $state<{ a: number; b: number; label: string } | null>(null);
+  $effect(() => { if (bus.events.length) library.ensure(); });
+  $effect(() => (showLanes && bus.analyzer ? bus.use() : undefined)); // keep the messages coming with the panel folded
+  // chips with a message in the window (to the second: the window moves with every frame)
+  const laneFrom = $derived(Math.floor(scale?.min ?? 0));
+  const lanes = $derived(showLanes && bus.analyzer ? lanesFor(bus.events.filter((e) => (e.end_idx ?? e.start_idx) * PERIOD >= laneFrom), bus.chips, (i) => i * PERIOD) : []);
+  const busHighlight = $derived([busLit, laneHover].filter((h) => h != null));
 
   /** The last firmware flash, while it's in the live buffer: shaded on the chart. */
   const flashHighlights = $derived.by(() => {
@@ -219,13 +232,15 @@
       <div class="chartwrap">
         <CurrentChart x={live.x} mn={live.mn} mx={live.mx} avg={live.avg} version={live.version} {log} {markers} {cursor} {showBand} {showAvg} highlights={[...flashHighlights, ...busHighlight]}
           selection={live.selection} onselect={(r) => live.select(r)} endLabel={live.paused ? 'end' : 'now'} height={400}
-          label="Current over time" />
+          label="Current over time" onscale={(sc) => (scale = sc)} />
+        {#if lanes.length}<ChipLanes {lanes} {scale} lit={busLit} onhover={(h) => (laneHover = h)} label="Chip lanes: bus messages in this window" />{/if}
       </div>
       <div class="legend">
         <button type="button" class="toggle" aria-pressed={showAvg} onclick={() => (showAvg = !showAvg)}><i class="sw line"></i>average</button>
         <button type="button" class="toggle" aria-pressed={showBand} onclick={() => (showBand = !showBand)}><i class="sw band"></i>min–max per pixel</button>
         <span><i class="sw tick"></i>log line</span>
         {#if flashHighlights.length}<span><i class="sw flash"></i>firmware flash</span>{/if}
+        {#if bus.analyzer && bus.events.length}<label class="lanetog"><input type="checkbox" bind:checked={showLanes} onchange={() => setLanesPref(showLanes)} /> chip lanes</label>{/if}
         <span class="faint">Drag to select a range · click a log line to put the cursor there</span>
       </div>
     </section>
@@ -273,6 +288,8 @@
   .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 8px 16px 12px; font-size: 12px; color: var(--muted); }
   .legend span, .toggle { display: inline-flex; align-items: center; gap: 6px; }
   .toggle { border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); padding: 3px 8px; cursor: pointer; font-size: 12px; }
+  .lanetog { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .lanetog input { margin: 0; accent-color: var(--accent); }
   .toggle[aria-pressed='false'] { opacity: 0.5; text-decoration: line-through; }
   .sw { display: inline-block; }
   .sw.line { width: 16px; height: 2px; background: var(--trace); }

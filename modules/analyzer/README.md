@@ -12,3 +12,13 @@ Install:
 3. Settings → Modules shows whether it found the analyzer.
 
 The simulator uses sigrok's demo device (`ANALYZER_DRIVER=demo`).
+
+## In recordings
+
+While a recording runs, the module decodes the bus by itself (Settings → Modules → Logic analyzer, *Decode in
+recordings*): around each wake (default: *Before each wake* to *After each wake* past its end), all of it, or off.
+It asks the api once a second which wakes capture found (`GET /api/modules/analyzer/recording`) and decodes each
+window once it has passed; a long wake, and *All of it*, go in pieces of a few seconds. The messages are stored with
+the recording, with a `bus_window` event per decoded stretch (or one saying why a stretch was missed). The session
+page shows them in a Bus panel and as chip lanes under the current, Compare lines up both cycles' lanes, and agents
+read them with the MCP tool `session_bus`. Only the decoded messages are kept, not the raw samples.

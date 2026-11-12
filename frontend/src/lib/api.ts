@@ -212,6 +212,7 @@ export type SessionSummary = {
   started_at: string;
   stopped_at: string | null;
   n_samples: number;
+  sample_period_s?: number;
   charge_c: number;
   config: Record<string, unknown>;
   notes: string;
@@ -222,7 +223,20 @@ export type SessionSummary = {
   device_name?: string | null;
   wakes?: number;
   raw_bytes?: number;
+  /** Modules that added to the session (analyzer: its decoded bus messages and stretches); null: none. */
+  modules?: Record<string, ModuleUse> | null;
 };
+export type ModuleUse = { messages: number; windows: number; missed: number };
+/** How a module shows on a session: "Bus 1 240" and what it did. */
+export function moduleBadges(m: Record<string, ModuleUse> | null | undefined): { label: string; title: string }[] {
+  return Object.entries(m ?? {}).map(([name, u]) => {
+    const what = name === 'analyzer' ? 'Bus' : name;
+    const n = u.messages.toLocaleString('en-US').replace(/,/g, ' ');
+    const parts = [`${n} message${u.messages === 1 ? '' : 's'}`];
+    if (u.windows || u.missed) parts.push(`${u.windows} stretch${u.windows === 1 ? '' : 'es'} decoded${u.missed ? `, ${u.missed} missed` : ''}`);
+    return { label: `${what} · ${n}`, title: `${name === 'analyzer' ? 'Logic analyzer: decoded I2C/SPI' : name}: ${parts.join(', ')}` };
+  });
+}
 
 /** Unexpected board resets of one kind with the same log line before them (numbers ignored). */
 export type ResetGroup = {
@@ -371,10 +385,19 @@ export type ModuleSetting = {
   unit?: string;
   default: unknown;
   choices?: (number | string)[];
+  /** What to call each choice, when not the value itself. */
+  choice_labels?: Record<string, string>;
   /** Settings of one group (e.g. "wiring") are shown together on one row. */
   group?: string;
   min?: number;
   max?: number;
+};
+/** A session's stored bus messages (GET /api/sessions/{id}/bus). */
+export type SessionBus = {
+  messages: import('./bus.svelte').BusEvent[];
+  more: boolean;
+  windows: { start_idx: number; end_idx: number | null; messages: number; missed?: string }[];
+  device_id: number | null;
 };
 /** A module (modules/<name>/): installed or not, and what it says about itself. */
 export type ModuleInfo = {
@@ -554,8 +577,14 @@ export const api = {
   checkChip: (id: number, checked: boolean) => req<Chip>('POST', `/api/chips/${id}/check?checked=${checked}`),
   restoreChip: (id: number) => req<Chip>('POST', `/api/chips/${id}/restore`),
   deleteChip: (id: number) => req<{ deleted: number; boards: string[] }>('DELETE', `/api/chips/${id}`),
+  /** The logic analyzer's messages stored with a session (start_idx: the session's sample index), and the stretches
+   *  it decoded or missed. */
+  sessionBus: (id: number, startS?: number, endS?: number) =>
+    req<SessionBus>('GET', `/api/sessions/${id}/bus?${new URLSearchParams({ ...(startS != null ? { start_s: String(startS) } : {}), ...(endS != null ? { end_s: String(endS) } : {}) })}`),
   moduleLiveEvents: <T>(name: string, afterSeq: number) => req<T[]>('GET', `/api/modules/${name}/events/live?after_seq=${afterSeq}&limit=2000`),
   /** The logic analyzer: decode the last seconds of its buffer (the transactions also land in the Live list). */
+  /** The logic analyzer: decode live (the newest second, every second) for the next 30 s, or stop. */
+  analyzerLive: (on: boolean) => req<{ live: boolean }>('POST', '/api/modules/analyzer/live', { on }),
   analyzerDecode: <T>(seconds: number) => req<T>('POST', '/api/modules/analyzer/decode', { seconds }),
   mcp: () => req<McpStatus>('GET', '/api/mcp'),
   setMcpLan: (lan: boolean) => req<McpStatus>('PUT', '/api/mcp', { lan }),

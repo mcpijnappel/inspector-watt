@@ -126,3 +126,25 @@ def check_wiring(w: dict) -> None:
     if (w.get("i2c_sda", "off") == "off") != (w.get("i2c_scl", "off") == "off"):
         raise DecodeError("I2C needs both SDA and SCL")
 
+
+
+_MASKS: dict[int, bytes] = {}
+
+
+def bus_pins(wiring: dict) -> int:
+    """Bit mask of the channels a bus is wired to (D0 = bit 0)."""
+    m = 0
+    for k, v in wiring.items():
+        if k.startswith(("i2c_", "spi_")) and v in PINS:
+            m |= 1 << int(v[1:])
+    return m
+
+
+def quiet(data: bytes, wiring: dict) -> bool:
+    """No edge on any bus pin in these samples: nothing to decode. Fast (bytes.translate and count run in C)."""
+    mask = bus_pins(wiring)
+    if not data or not mask:
+        return True
+    table = _MASKS.get(mask) or _MASKS.setdefault(mask, bytes(i & mask for i in range(256)))
+    t = data.translate(table)
+    return t.count(t[:1]) == len(t)

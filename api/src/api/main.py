@@ -23,6 +23,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 
 from . import chips as chip_library
+from .busnames import fold_repeats, name_session_bus
 from .migrate import migrate
 from .resources import Resources
 from . import ota
@@ -135,10 +136,19 @@ async def health():
     return {"db": bool(db), "capture": cap is not None, "mcp": (await mcp_health())["up"]}
 
 
+# Which modules a session used (modules/<name>/: the logic analyzer decoded its bus): per module, how many of its
+# events (bus messages), and the stretches it decoded or missed.
+MODULES_USED = """(SELECT jsonb_object_agg(m, jsonb_build_object('messages', n, 'windows', w, 'missed', x)) FROM (
+                     SELECT split_part(e.module, ':', 1) AS m, count(*) FILTER (WHERE e.kind <> 'bus_window') AS n,
+                            count(*) FILTER (WHERE e.kind = 'bus_window' AND NOT e.data ? 'missed') AS w,
+                            count(*) FILTER (WHERE e.kind = 'bus_window' AND e.data ? 'missed') AS x
+                     FROM events e WHERE e.session_id = s.id AND e.module IS NOT NULL GROUP BY 1) u) AS modules"""
+
+
 @app.get("/api/sessions")
 async def list_sessions():
-    rows = await q_all("""
-        SELECT s.*, d.name AS device_name,
+    rows = await q_all(f"""
+        SELECT s.*, d.name AS device_name, {MODULES_USED},
                (SELECT count(*) FROM events e WHERE e.session_id = s.id AND e.kind = 'wake') AS wakes,
                (SELECT coalesce(sum(bytes), 0)::bigint FROM raw_segments r WHERE r.session_id = s.id) AS raw_bytes
         FROM sessions s LEFT JOIN devices d ON d.id = s.device_id ORDER BY s.id DESC""")
@@ -148,6 +158,7 @@ async def list_sessions():
 @app.get("/api/sessions/{sid}")
 async def session_detail(sid: int):
     s = await get_session(sid)
+    s["modules"] = (await q_one(f"SELECT {MODULES_USED} FROM sessions s WHERE s.id = %s", (sid,)))["modules"]
     s["events"] = {r["kind"]: r["n"] for r in await q_all(
         "SELECT kind, count(*) AS n FROM events WHERE session_id = %s GROUP BY kind", (sid,))}
     s["raw"] = {r["kind"]: {"files": r["files"], "bytes": r["bytes"], "seconds": r["samples"] * SAMPLE_PERIOD_S}
@@ -331,13 +342,15 @@ async def stats(sid: int, start_s: float | None = None, end_s: float | None = No
 @app.get("/api/sessions/{sid}/events")
 async def events(sid: int, kind: str | None = None, start_s: float | None = None, end_s: float | None = None,
                  limit: int = Query(1000, le=20000)):
+    """The session's own events (wakes, gaps, flashes, ...). Modules' events (the analyzer's bus messages, thousands
+    per session) are left out: /bus has them."""
     s = await get_session(sid)
     t0 = s["started_at"]
     a, b = start_s or 0.0, end_s if end_s is not None else s["duration_s"] + 1
     rows = await q_all("""SELECT id, kind, start_idx * %(p)s AS t, end_idx * %(p)s AS end_t, peak_a, mean_a,
                                  charge_c, data
                           FROM events WHERE session_id = %(sid)s AND (%(kind)s::text IS NULL OR kind = %(kind)s)
-                            AND ts >= %(a)s AND ts < %(b)s ORDER BY start_idx LIMIT %(limit)s""",
+                            AND module IS NULL AND ts >= %(a)s AND ts < %(b)s ORDER BY start_idx LIMIT %(limit)s""",
                        {"p": SAMPLE_PERIOD_S, "sid": sid, "kind": kind, "limit": limit,
                         "a": t0 + timedelta(seconds=a), "b": t0 + timedelta(seconds=b)})
     if kind in (None, "reset"):
@@ -347,6 +360,74 @@ async def events(sid: int, kind: str | None = None, start_s: float | None = None
               for i, r in enumerate(await session_resets(s)) if a <= r["t"] < b]
         rows = sorted([*rows, *rs], key=lambda e: e["t"])[:limit]
     return rows
+
+
+BUS_MODULE = "analyzer:%"  # modules whose events are bus messages
+BUS_KINDS = ("i2c", "spi")
+
+
+async def bus_rows(sid: int, a_idx: int, b_idx: int, limit: int) -> tuple[list[dict], list[dict]]:
+    """A session's bus messages that start in [a_idx, b_idx) (session sample indexes, at most limit + 1) and the
+    decoded windows that overlap it."""
+    msgs = await q_all("""SELECT id AS seq, module, kind, start_idx, end_idx, data FROM events
+                          WHERE session_id = %(sid)s AND module LIKE %(m)s AND kind = ANY(%(kinds)s)
+                            AND start_idx >= %(a)s AND start_idx < %(b)s ORDER BY start_idx LIMIT %(n)s""",
+                       {"sid": sid, "m": BUS_MODULE, "kinds": list(BUS_KINDS), "a": a_idx, "b": b_idx, "n": limit + 1})
+    wins = await q_all("""SELECT start_idx, end_idx, data FROM events
+                          WHERE session_id = %(sid)s AND module LIKE %(m)s AND kind = 'bus_window'
+                            AND start_idx < %(b)s AND coalesce(end_idx, start_idx) > %(a)s ORDER BY start_idx""",
+                       {"sid": sid, "m": BUS_MODULE, "a": a_idx, "b": b_idx})
+    return msgs, [{"start_idx": w["start_idx"], "end_idx": w["end_idx"], "messages": w["data"].get("messages", 0),
+                   **({"missed": w["data"]["missed"]} if w["data"].get("missed") else {})} for w in wins]
+
+
+def idx_range(s: dict, start_s: float | None, end_s: float | None) -> tuple[int, int]:
+    a = max(0.0, start_s or 0.0)
+    b = s["duration_s"] + 1 if end_s is None else end_s
+    return int(a / SAMPLE_PERIOD_S), int(math.ceil(b / SAMPLE_PERIOD_S))
+
+
+@app.get("/api/sessions/{sid}/bus")
+async def session_bus(sid: int, start_s: float | None = None, end_s: float | None = None,
+                      limit: int = Query(20000, ge=1, le=50000)):
+    """The logic analyzer's messages stored with the session (as the Live page gets them: start_idx is the session's
+    sample index) and the stretches it decoded (or missed, and why), for the session page and Compare."""
+    s = await get_session(sid)
+    a, b = idx_range(s, start_s, end_s)
+    msgs, wins = await bus_rows(sid, a, b, limit)
+    return {"messages": msgs[:limit], "more": len(msgs) > limit, "windows": wins, "device_id": s.get("device_id")}
+
+
+@app.get("/api/sessions/{sid}/bus/named")
+async def session_bus_named(sid: int, start_s: float | None = None, end_s: float | None = None, chip: str | None = None,
+                            fold: bool = True, limit: int = Query(500, ge=1, le=5000)):
+    """For agents: the bus messages named like the Bus panel does (chip from the board's list, register or command
+    and readings from the sensor library), repeats folded. chip: only messages of chips whose name, type or place
+    contains this."""
+    s = await get_session(sid)
+    a, b = idx_range(s, start_s, end_s)
+    # a little before the range too: where the I2C switch stood when it began
+    ctx = int(2.0 / SAMPLE_PERIOD_S)
+    raw, wins = await bus_rows(sid, max(0, a - ctx), b, 20000)
+    events = [{"t": r["start_idx"] * SAMPLE_PERIOD_S, "end_t": None if r["end_idx"] is None else r["end_idx"] * SAMPLE_PERIOD_S,
+               "kind": r["kind"], "data": r["data"]} for r in raw[:20000]]
+    dev = await q_one("SELECT bus_chips FROM devices WHERE id = %s", (s["device_id"],)) if s.get("device_id") else None
+    chips = (dev or {}).get("bus_chips") or {}
+    library = {r["n"]: {**r["body"], "name": r["name"]} for r in await q_all("SELECT lower(name) AS n, name, body FROM chip_types")}
+    out = name_session_bus(events, chips, library, fold=False)
+    lo = a * SAMPLE_PERIOD_S
+    msgs = [m for m in out["messages"] if m["t_s"] >= lo]
+    if chip:
+        q = chip.lower()
+        msgs = [m for m in msgs if q in m["chip"].lower() or q in m.get("type", "").lower() or q in m["at"].lower()]
+    shown = fold_repeats(msgs) if fold else msgs
+    wins = [w for w in wins if w["end_idx"] is None or w["end_idx"] > a]
+    return {"session": {"id": sid, "name": s["name"], "board": s.get("device_name")},
+            "range": {"start_s": round(lo, 4), "end_s": round(min(b * SAMPLE_PERIOD_S, s["duration_s"]), 4)},
+            "decoded": {"windows": len(wins), "missed": [{"start_s": round(w["start_idx"] * SAMPLE_PERIOD_S, 3),
+                                                          "why": w["missed"]} for w in wins if w.get("missed")][:20]},
+            "switches": out["switches"], "board_chips": chips,
+            "messages": shown[:limit], "shown": min(limit, len(shown)), "more": len(shown) > limit or len(raw) > 20000}
 
 
 @app.get("/api/sessions/{sid}/uart")

@@ -27,8 +27,10 @@ class ModuleEvents:
         """Stream index of a unix time (on this machine's clock), or None while the PPK2 clock isn't known."""
         return self.clock.index_at(time.monotonic() - (time.time() - t))
 
-    def add(self, module: str, items: list[dict]) -> dict:
-        """items: [{kind, t, end_t?, data?}] -> stored in the running recording (if any) and kept for Live."""
+    def add(self, module: str, items: list[dict], to_live: bool = True, record: bool = True) -> dict:
+        """items: [{kind, t, end_t?, data?}] -> stored in the running recording (if any; record) and kept for Live
+        (to_live). The analyzer's live decoding is Live only; what it decodes for a recording goes only into the
+        recording while live decoding fills the Live list (else both would show it twice)."""
         live = recorded = skipped = 0
         for it in items:
             start = self.index_at_wall(it["t"])
@@ -37,12 +39,13 @@ class ModuleEvents:
                 continue
             end = self.index_at_wall(it["end_t"]) if it.get("end_t") is not None else None
             data = it.get("data") or {}
-            with self._lock:
-                self._seq += 1
-                self._live.append({"seq": self._seq, "module": module, "kind": it["kind"], "start_idx": start,
-                                   "end_idx": end, "data": data})
-            live += 1
-            if self.sessions and self.sessions.note_event(it["kind"], start, end, module=module, **data):
+            if to_live:
+                with self._lock:
+                    self._seq += 1
+                    self._live.append({"seq": self._seq, "module": module, "kind": it["kind"], "start_idx": start,
+                                       "end_idx": end, "data": data})
+                live += 1
+            if record and self.sessions and self.sessions.note_event(it["kind"], start, end, module=module, **data):
                 recorded += 1
         return {"live": live, "recorded": recorded, "skipped": skipped}
 

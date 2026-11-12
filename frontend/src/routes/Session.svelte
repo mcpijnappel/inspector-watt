@@ -3,11 +3,17 @@
   import BatteryPanel from '../components/BatteryPanel.svelte';
   import BatteryPicker from '../components/BatteryPicker.svelte';
   import CurrentChart from '../components/CurrentChart.svelte';
+  import BusPanel from '../components/BusPanel.svelte';
+  import ChipLanes from '../components/ChipLanes.svelte';
+  import type { BusEvent, BusSource } from '../lib/bus.svelte';
+  import type { Chip as BoardChip, Chips } from '../lib/busfold';
+  import { library } from '../lib/chips.svelte';
+  import { lanesFor, lanesPref, setLanesPref, type ChartScale, type LaneWindow } from '../lib/lanes';
   import LogPanel from '../components/LogPanel.svelte';
   import PhaseTable from '../components/PhaseTable.svelte';
   import RulesEditor from '../components/RulesEditor.svelte';
   import WhatIf from '../components/WhatIf.svelte';
-  import { api, type BatteryForm, type PhasesResult, type ResetGroup, type SessionDetail, type SessionEvent, type SessionStats, type Trace } from '../lib/api';
+  import { api, moduleBadges, type BatteryForm, type PhasesResult, type ResetGroup, type SessionDetail, type SessionEvent, type SessionStats, type Trace } from '../lib/api';
   import { fmtAmps, fmtBytes, fmtCharge, fmtLife, fmtSessionTime, fmtSpan, fmtStarted, splitLevel } from '../lib/format';
   import { indexAt, type LiveLine, type Range } from '../lib/live.svelte';
   import { settings } from '../lib/settings.svelte';
@@ -53,6 +59,16 @@
   let selected = $state<LiveLine | null>(null);
   let events = $state<SessionEvent[]>([]);
   let eventTab = $state<'wake' | 'other'>('wake');
+
+  // the logic analyzer's messages stored with the session, for what the chart shows
+  let busEvents = $state.raw<BusEvent[]>([]);
+  let busWindows = $state.raw<{ start_idx: number; end_idx: number | null; messages: number; missed?: string }[]>([]);
+  let busMore = $state(false);
+  let busChips = $state<Chips>({});
+  let busShade = $state<{ a: number; b: number; label: string } | null>(null);
+  let laneHover = $state<{ a: number; b: number; label: string } | null>(null);
+  let scale = $state<ChartScale | null>(null);
+  let showLanes = $state(lanesPref());
 
   // editing
   let editing = $state(false);
@@ -115,6 +131,47 @@
   let selToken = 0;
 
   const duration = $derived(s?.duration_s ?? 0);
+  const P = $derived(s?.sample_period_s ?? 1e-5);
+  /** The analyzer stored messages (or decoded stretches) with this session. */
+  const hasBus = $derived(!!(s?.events.i2c || s?.events.spi || s?.events.bus_window));
+  $effect(() => {
+    const dev = s?.device_id;
+    if (!hasBus) return;
+    library.ensure();
+    if (dev != null) api.busChips(dev).then((c) => (busChips = c)).catch(() => {});
+  });
+  const lanes = $derived(showLanes ? lanesFor(busEvents, busChips, (i) => i * P) : []);
+  const laneWindows = $derived<LaneWindow[]>(busWindows.map((w) => ({ a: w.start_idx * P, b: (w.end_idx ?? w.start_idx) * P, missed: w.missed })));
+  const busHighlights = $derived([busShade, laneHover].filter((h) => h != null));
+  const decodedText = $derived.by(() => {
+    const done = busWindows.filter((w) => !w.missed).length, missed = busWindows.length - done;
+    return `stored with the recording${busWindows.length ? ` · ${done} stretch${done === 1 ? '' : 'es'} decoded here${missed ? `, ${missed} missed` : ''}` : ''}`;
+  });
+  const busSource = $derived<BusSource>({
+    events: busEvents,
+    chips: busChips,
+    msPerIdx: P * 1000,
+    clock: (idx) => fmtSessionTime(idx * P, Math.min(span, 10)),
+    status: decodedText,
+    summary: `${busEvents.length}${busMore ? '+ (the first ones: zoom in for all)' : ''} messages in view`,
+    empty: busWindows.some((w) => w.missed)
+      ? `No bus messages here. The analyzer couldn't decode this part: ${busWindows.find((w) => w.missed)?.missed}.`
+      : busWindows.length ? 'No bus traffic in this part of the recording (the analyzer decoded it, the bus was quiet).'
+        : 'Nothing decoded in this part of the recording (only around wakes, see Settings → Modules: Decode in recordings).',
+    board: s?.device_name ?? undefined,
+    setChip: s?.device_id != null ? saveBusChip : undefined,
+    onhover: (h) => (busShade = h ? { a: h.a * P, b: h.b * P, label: h.label } : null),
+  });
+  async function saveBusChip(key: string, chip: BoardChip) {
+    const dev = s?.device_id;
+    if (dev == null) return;
+    const next = { ...busChips };
+    const name = (chip.name ?? '').trim();
+    const c = { ...(name ? { name } : {}), ...(chip.type ? { type: chip.type } : {}), ...(chip.switch != null ? { switch: chip.switch } : {}) };
+    if (Object.keys(c).length) next[key] = c;
+    else delete next[key];
+    busChips = await api.setBusChips(dev, next);
+  }
   const span = $derived(view.b - view.a);
   // The overview only marks the visible range once you've zoomed in.
   const wholeView = $derived(view.a <= 1e-3 && view.b >= duration - 1e-3);
@@ -235,12 +292,16 @@
     const a = Math.max(0, view.a);
     const b = Math.min(Math.max(s.duration_s, a + 1e-4), view.b);
     try {
-      const [t, st, u] = await Promise.all([
+      const [t, st, u, bu] = await Promise.all([
         api.trace(id, a, b, POINTS),
         api.sessionStats(id, a, b).catch(() => null),
         api.sessionUart(id, a, b, 2000).catch(() => []),
+        hasBus ? api.sessionBus(id, a, b).catch(() => null) : Promise.resolve(null),
       ]);
       if (my !== token) return;
+      busEvents = bu?.messages ?? [];
+      busWindows = bu?.windows ?? [];
+      busMore = bu?.more ?? false;
       trace = t;
       tx = t.x;
       tmn = t.min;
@@ -454,6 +515,7 @@
           <h1>{s.name} <span class="badge {s.kind}">{s.kind}</span>
             {#if s.status === 'running'}<span class="badge rec">recording</span>{/if}
             {#if s.status === 'interrupted'}<span class="badge warn">interrupted</span>{/if}
+            {#each moduleBadges(s.modules) as b (b.label)}<span class="badge mod" title={b.title}>{b.label}</span>{/each}
           </h1>
           <div class="meta">{#if s.device_name}{s.device_name} · {/if}{fmtStarted(s.started_at)} · {fmtSpan(s.duration_s)} · {voltage}{s.notes ? ` · ${s.notes}` : ''}</div>
         {/if}
@@ -506,7 +568,8 @@
             <span class="sub bad">{resets.groups.slice(0, 3).map(resetText).join(' · ')}{resets.groups.length > 3 ? ` · +${resets.groups.length - 3} more` : ''}</span>
           </button>
         {/if}
-        <div class="sub">{rawText} · {s.uart_lines} log lines</div></div>
+        <div class="sub">{rawText} · {s.uart_lines} log lines</div>
+        {#if s.modules?.analyzer}{@const u = s.modules.analyzer}<div class="sub">bus: {u.messages} messages{u.windows || u.missed ? ` · ${u.windows} stretches decoded${u.missed ? `, ${u.missed} missed` : ''}` : ''}</div>{/if}</div>
     </section>
 
     <section class="panel overview" aria-label="Whole session">
@@ -603,19 +666,22 @@
           </div>
         {/if}
         <div class="chartwrap">
-          <CurrentChart x={tx} mn={tmn} mx={tmx} avg={tavg} {version} {log} {markers} alerts={resetTimes} highlights={flashHighlights} {cursor} {showBand} {showAvg} {selection} bands={phaseStyle === 'off' ? [] : bands} bandStyle={phaseStyle === 'lines' ? 'lines' : 'bands'}
-            onselect={select} height={420} xLabel={(v) => fmtSessionTime(v, span)} label="Current in the selected time range" />
+          <CurrentChart x={tx} mn={tmn} mx={tmx} avg={tavg} {version} {log} {markers} alerts={resetTimes} highlights={[...flashHighlights, ...busHighlights]} {cursor} {showBand} {showAvg} {selection} bands={phaseStyle === 'off' ? [] : bands} bandStyle={phaseStyle === 'lines' ? 'lines' : 'bands'}
+            onselect={select} height={420} xLabel={(v) => fmtSessionTime(v, span)} label="Current in the selected time range" onscale={(sc) => (scale = sc)} />
+          {#if lanes.length}<ChipLanes {lanes} {scale} windows={laneWindows} lit={busShade} onhover={(h) => (laneHover = h)} label="Chip lanes: bus messages in view" />{/if}
         </div>
         <div class="legend">
           <button type="button" class="toggle" aria-pressed={showAvg} onclick={() => (showAvg = !showAvg)}><i class="sw line"></i>average</button>
           <button type="button" class="toggle" aria-pressed={showBand} onclick={() => (showBand = !showBand)}><i class="sw band"></i>min–max per pixel</button>
           <span><i class="sw tick"></i>log line</span>
+          {#if hasBus}<label class="lanetog"><input type="checkbox" bind:checked={showLanes} onchange={() => setLanesPref(showLanes)} /> chip lanes</label>{/if}
           {#if viewStats}<span class="mono">on screen: {fmtAmps(viewStats.mean_a)} · {fmtCharge(viewStats.charge_c)} · peak {fmtAmps(viewStats.max_a)}</span>{/if}
           <span class="faint">{sourceText}{loading ? ' · loading…' : ''}</span>
           {#if trace?.raw_available === false}<span class="warn">no raw data stored here (soak keeps raw only around wakes)</span>{/if}
           <span class="faint">· drag to select · click a log line for the cursor · right-click it to start a phase</span>
         </div>
       </section>
+      {#if hasBus}<BusPanel source={busSource} />{/if}
       {#if phasesRes?.profile && tview}
         <PhaseTable result={phasesRes} view={tview} current={cycle} mode={phaseMode} onmode={(m) => (phaseMode = m)} sid={id}
           ongo={(i) => { if (rangeMode !== 'cycle') setRangeMode('cycle'); goCycle(i); document.querySelector('.panel.main')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }} />
@@ -729,6 +795,7 @@
   .badge.soak { color: #a371f7; background: rgba(163, 113, 247, 0.14); }
   .badge.rec { color: var(--rec); background: var(--rec-bg); }
   .badge.warn { color: var(--warn); background: rgba(227, 179, 65, 0.14); }
+  .badge.mod { color: var(--flash); background: var(--flash-bg); font-weight: 500; }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
   .overview { padding: 8px 12px 6px 4px; }
   .ovhead { display: flex; align-items: center; gap: 10px; padding: 4px 10px 2px; }
@@ -763,6 +830,8 @@
   .legend span, .toggle { display: inline-flex; align-items: center; gap: 6px; }
   .toggle { border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); padding: 3px 8px; cursor: pointer; font-size: 12px; }
   .toggle[aria-pressed='false'] { opacity: 0.5; text-decoration: line-through; }
+  .lanetog { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .lanetog input { margin: 0; accent-color: var(--accent); }
   .sw { display: inline-block; }
   .sw.line { width: 16px; height: 2px; background: var(--trace); }
   .sw.band { width: 16px; height: 10px; background: var(--trace-fill); }

@@ -19,6 +19,7 @@ export type Chips = Record<string, Chip>;
 export type Item = {
   t: number; // ms
   idx: number; // stream index of the message
+  end: number; // stream index where it ended (a command: where its answer ended)
   key: string; // m:68, 0:16, spi
   addr: number | null;
   port: string | null;
@@ -119,7 +120,7 @@ export function toItems(events: BusEvent[], switches: Set<number>, msPerIdx: num
     if (used.has(i)) continue;
     if (e.kind === 'spi') {
       const mosi = e.data.mosi ?? [], miso = e.data.miso ?? [];
-      const base = { t, idx: e.start_idx, key: 'spi', addr: null, port: null, nack: false };
+      const base = { t, idx: e.start_idx, end: e.end_idx ?? e.start_idx, key: 'spi', addr: null, port: null, nack: false };
       if (spi && mosi.length) {
         // first byte: the register address and read/write bit; the rest is the data (MISO read, MOSI written)
         const bit = spi.read_bit ?? 0x80;
@@ -133,12 +134,12 @@ export function toItems(events: BusEvent[], switches: Set<number>, msPerIdx: num
     }
     const a = e.data.addr ?? 0, parts = e.data.parts ?? [], nack = !!e.data.nack, st = states[i];
     if (isPortWrite(e, switches)) {
-      if (showSwitch) out.push({ t, idx: e.start_idx, key: `m:${a}`, addr: a, port: null, kind: 'switch', nack, sig: `sw|${parts[0].bytes[0]}`,
+      if (showSwitch) out.push({ t, idx: e.start_idx, end: e.end_idx ?? e.start_idx, key: `m:${a}`, addr: a, port: null, kind: 'switch', nack, sig: `sw|${parts[0].bytes[0]}`,
         text: st.kind === 'open' ? `open port ${st.port}` : 'all ports off' });
       continue;
     }
     const port = portOf(a, st);
-    const base = { t, idx: e.start_idx, key: `${port ?? 'm'}:${a}`, addr: a, port, nack };
+    const base = { t, idx: e.start_idx, end: e.end_idx ?? e.start_idx, key: `${port ?? 'm'}:${a}`, addr: a, port, nack };
     const [p0, p1] = parts;
     let it: Omit<Item, 'sig'>;
     if (!p0) continue;
@@ -155,7 +156,7 @@ export function toItems(events: BusEvent[], switches: Set<number>, msPerIdx: num
       }
       if (j >= 0) {
         used.add(j);
-        it = { ...base, kind: 'cmd', w: p0.bytes, r: events[j].data.parts![0].bytes, wait: (events[j].start_idx - e.start_idx) * msPerIdx };
+        it = { ...base, end: events[j].end_idx ?? events[j].start_idx, kind: 'cmd', w: p0.bytes, r: events[j].data.parts![0].bytes, wait: (events[j].start_idx - e.start_idx) * msPerIdx };
       } else it = { ...base, kind: 'write', w: p0.bytes };
     } else it = { ...base, kind: 'read', r: parts.flatMap((p) => p.bytes) };
     const wrote = it.kind === 'set' || it.kind === 'cmd' || it.kind === 'write' ? it.w : [];
