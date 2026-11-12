@@ -10,11 +10,13 @@ from typing import Annotated, Literal
 import asyncio
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
 from .client import Api, ApiError
 from .hardware import HW_ANNOTATIONS, HW_META, Hardware
+from .modules import Modules
 
 INSTRUCTIONS = """\
 Inspector Watt: a Nordic PPK2 measures the current of a board (the device under test, e.g. a XIAO ESP32-C6) at
@@ -63,13 +65,22 @@ HARDWARE_TOOLS = {"dut_power", "power_cycle", "set_voltage", "measuring", "start
                   "save_live_range", "usb_console", "usb_key", "usb_send"}
 
 
+# The sensor library and a board's chips: only with a module that decodes buses (the logic analyzer).
+LIBRARY_TOOLS = {"chips_list", "chip_get", "chip_save", "board_chips", "set_board_chips", "bus_decode"}
+
+
 class TrackerMCP(FastMCP):
     async def list_tools(self):
-        """The hardware tools only while Settings → Agents → Hardware control is on."""
+        """The hardware tools only while Settings → Agents → Hardware control is on; the sensor library's tools only
+        while a bus-decoding module is installed."""
         tools = await super().list_tools()
-        if await hw.enabled():
-            return tools
-        return [t for t in tools if t.name not in HARDWARE_TOOLS]
+        hidden = (set() if await hw.enabled() else HARDWARE_TOOLS) | (set() if await modules.bus_decoding() else LIBRARY_TOOLS)
+        return [t for t in tools if t.name not in hidden]
+
+    async def call_tool(self, name, arguments):
+        if name in LIBRARY_TOOLS and not await modules.bus_decoding():
+            raise ToolError(f"{name} needs the logic analyzer module, and it isn't installed")
+        return await super().call_tool(name, arguments)
 
 
 mcp = TrackerMCP(
@@ -84,6 +95,7 @@ mcp = TrackerMCP(
 )
 api = Api()
 hw = Hardware(api)
+modules = Modules(api)
 
 SessionId = Annotated[int, Field(description="Session id (from list_sessions)")]
 StartS = Annotated[float | None, Field(description="Start, seconds since the session started (default: the start)")]

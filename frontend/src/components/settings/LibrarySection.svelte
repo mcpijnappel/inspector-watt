@@ -112,7 +112,7 @@
 </script>
 
 <div class="s-section">
-  <SectionHead title="Sensor library" intro="How each chip talks, per bus (I2C, SPI), for every board: the Bus panel names registers and commands from it and turns bytes into readings. Agents can fill a table from a datasheet; you check it here.">
+  <SectionHead title="Sensor library" intro="How each chip and sensor talks, per bus (I2C, SPI), for every board: the Bus panel names registers and commands from it and turns bytes into readings. Agents can fill a table from a datasheet; you check it here.">
     {#snippet action()}<button class="btn primary" type="button" disabled={editing === 'new'} onclick={() => startEdit(null)}>New chip</button>{/snippet}
   </SectionHead>
   {#if error && editing == null}<div class="s-banner">{error}</div>{/if}

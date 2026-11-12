@@ -30,8 +30,11 @@ export type BusEvent = {
 export type DecodeResult = { from: number; to: number; samples: number; decode_s: number; found: number; truncated: boolean };
 
 class Bus {
-  /** The analyzer module, if installed (null: not installed or not known yet). */
+  /** The analyzer module, if installed (null: not installed or not known yet). The sensor library's settings show
+   * only with it. */
   analyzer = $state<ModuleInfo | null>(null);
+  /** The module list was asked for at least once (until then analyzer null says nothing). */
+  modulesKnown = $state(false);
   events = $state.raw<BusEvent[]>([]);
   busy = $state(false);
   error = $state('');
@@ -46,22 +49,30 @@ class Bus {
   private users = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
   private modTimer: ReturnType<typeof setTimeout> | undefined;
+  private watchers = 0;
+  private stopWatch: (() => void) | undefined;
 
-  /** Look for the module now and then (the Live page decides from this whether to show the Bus panel); more often
-   * while it has no analyzer to read, so plugging one in shows within seconds. */
+  /** Look for the module now and then while a page needs it (the Live page for the Bus panel, Settings for the sensor
+   * library); more often while it has no analyzer to read, so plugging one in shows within seconds. */
   watch() {
-    let stop = false;
-    const load = async () => {
-      try {
-        const mods = await api.modules();
-        this.analyzer = mods.find((m) => m.name === 'analyzer' && m.installed) ?? null;
-      } catch { /* the api's own banner shows errors */ }
-      if (stop) return;
-      const waiting = this.analyzer != null && this.analyzer.values?.enabled !== false && !this.analyzer.module?.health?.ok;
-      this.modTimer = setTimeout(load, waiting ? WAITING_EVERY_MS : MODULES_EVERY_MS);
+    if (this.watchers++ === 0) {
+      let stop = false;
+      const load = async () => {
+        try {
+          const mods = await api.modules();
+          this.analyzer = mods.find((m) => m.name === 'analyzer' && m.installed) ?? null;
+        } catch { /* the api's own banner shows errors */ }
+        this.modulesKnown = true;
+        if (stop) return;
+        const waiting = this.analyzer != null && this.analyzer.values?.enabled !== false && !this.analyzer.module?.health?.ok;
+        this.modTimer = setTimeout(load, waiting ? WAITING_EVERY_MS : MODULES_EVERY_MS);
+      };
+      void load();
+      this.stopWatch = () => { stop = true; clearTimeout(this.modTimer); };
+    }
+    return () => {
+      if (--this.watchers === 0) this.stopWatch?.();
     };
-    void load();
-    return () => { stop = true; clearTimeout(this.modTimer); };
   }
 
   /** The panel is open: poll new events until the returned cleanup. */

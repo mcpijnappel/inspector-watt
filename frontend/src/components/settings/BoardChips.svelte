@@ -97,7 +97,7 @@
 </script>
 
 <details class="chips" open={rows.length > 0 && rows.length < 12}>
-  <summary>Chips on its I2C and SPI bus <span class="muted">({loaded ? rows.length : '…'})</span></summary>
+  <summary>Chips and sensors on its I2C and SPI bus <span class="muted">({loaded ? rows.length : '…'})</span></summary>
   <div class="inner">
     {#if rows.length}
       <div class="s-tablewrap">
@@ -129,7 +129,7 @@
         </table>
       </div>
     {:else if loaded}
-      <p class="muted small">No chips yet. Add the ones on this board so the Bus panel can name them, or let an agent do it from the schematic.</p>
+      <p class="muted small">No chips or sensors yet. Add the ones on this board so the Bus panel can name them, or let an agent do it from the schematic.</p>
     {/if}
     {#if error}<div class="error">{error}</div>{/if}
     <div class="bar">
