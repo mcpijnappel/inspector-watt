@@ -41,6 +41,16 @@ def allowed(method: str, path: str) -> bool:
         return method == "GET"  # never add, renew or delete tokens, or switch LAN / hardware control
     if method == "GET":
         return True
+    # The sensor library and a board's chip list (the api refuses these unless Settings → Agents allows them);
+    # never checking or deleting a chip table. Decoding the analyzer's buffer only reads it.
+    if path == "/api/chips":
+        return method == "POST"
+    if re.fullmatch(r"/api/chips/\d+", path):
+        return method == "PUT"
+    if re.fullmatch(r"/api/devices/\d+/bus-chips", path):
+        return method == "PUT"
+    if path == "/api/modules/analyzer/decode":
+        return method == "POST"
     if path.startswith("/api/device/") or path in ("/api/sessions", "/api/sessions/stop") or path.startswith("/api/devices"):
         return False
     if path.startswith("/api/profiles"):
@@ -58,15 +68,17 @@ class Api:
                                       timeout=httpx.Timeout(180.0, connect=5.0), transport=transport,
                                       headers={"X-PST-Client": "mcp"})
 
-    async def request(self, method: str, path: str, params: dict | None = None, json: object = None):
+    async def request(self, method: str, path: str, params: dict | None = None, json: object = None,
+                      agent: str | None = None):
+        """`agent`: the client's name, kept with what it saves (the sensor library shows "by agent: …")."""
         if not allowed(method, path):
             raise ApiError(f"not allowed from MCP: {method} {path}")
-        return await self._send(method, path, params, json)
+        return await self._send(method, path, params, json, {"X-PST-Agent": agent[:60]} if agent else None)
 
-    async def _send(self, method: str, path: str, params: dict | None, json: object):
+    async def _send(self, method: str, path: str, params: dict | None, json: object, headers: dict | None = None):
         params = {k: v for k, v in (params or {}).items() if v is not None}
         try:
-            r = await self.http.request(method, path, params=params, json=json)
+            r = await self.http.request(method, path, params=params, json=json, headers=headers)
         except httpx.HTTPError as e:
             raise ApiError(f"api unreachable: {e}") from e
         if r.status_code >= 400:

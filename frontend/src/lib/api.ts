@@ -212,6 +212,7 @@ export type SessionSummary = {
   started_at: string;
   stopped_at: string | null;
   n_samples: number;
+  sample_period_s?: number;
   charge_c: number;
   config: Record<string, unknown>;
   notes: string;
@@ -222,7 +223,20 @@ export type SessionSummary = {
   device_name?: string | null;
   wakes?: number;
   raw_bytes?: number;
+  /** Modules that added to the session (analyzer: its decoded bus messages and stretches); null: none. */
+  modules?: Record<string, ModuleUse> | null;
 };
+export type ModuleUse = { messages: number; windows: number; missed: number };
+/** How a module shows on a session: "Bus 1 240" and what it did. */
+export function moduleBadges(m: Record<string, ModuleUse> | null | undefined): { label: string; title: string }[] {
+  return Object.entries(m ?? {}).map(([name, u]) => {
+    const what = name === 'analyzer' ? 'Bus' : name;
+    const n = u.messages.toLocaleString('en-US').replace(/,/g, ' ');
+    const parts = [`${n} message${u.messages === 1 ? '' : 's'}`];
+    if (u.windows || u.missed) parts.push(`${u.windows} stretch${u.windows === 1 ? '' : 'es'} decoded${u.missed ? `, ${u.missed} missed` : ''}`);
+    return { label: `${what} · ${n}`, title: `${name === 'analyzer' ? 'Logic analyzer: decoded I2C/SPI' : name}: ${parts.join(', ')}` };
+  });
+}
 
 /** Unexpected board resets of one kind with the same log line before them (numbers ignored). */
 export type ResetGroup = {
@@ -362,6 +376,44 @@ export type Measurement = {
   flash_wake_wait_s: number;
   fixed: { ring_seconds: number; ppk2_port: string; uart_port: string; usb_port: string };
 };
+/** A module's setting, as it describes it (the form is drawn from this). */
+export type ModuleSetting = {
+  key: string;
+  type: 'choice' | 'number' | 'bool' | 'text';
+  label: string;
+  hint?: string;
+  unit?: string;
+  default: unknown;
+  choices?: (number | string)[];
+  /** What to call each choice, when not the value itself. */
+  choice_labels?: Record<string, string>;
+  /** Settings of one group (e.g. "wiring") are shown together on one row. */
+  group?: string;
+  min?: number;
+  max?: number;
+};
+/** A session's stored bus messages (GET /api/sessions/{id}/bus). */
+export type SessionBus = {
+  messages: import('./bus.svelte').BusEvent[];
+  more: boolean;
+  windows: { start_idx: number; end_idx: number | null; messages: number; missed?: string }[];
+  device_id: number | null;
+};
+/** A module (modules/<name>/): installed or not, and what it says about itself. */
+export type ModuleInfo = {
+  name: string;
+  title: string;
+  installed: boolean;
+  error: string | null;
+  module: {
+    name: string; title: string; version: string; contract: number; description?: string;
+    health: { ok: boolean; detail: string | null };
+    settings: ModuleSetting[];
+    events: { kind: string; label: string; draw: string; color: string }[];
+    tools: { name: string; description: string; hardware: boolean }[];
+  } | null;
+  values: Record<string, unknown>;
+};
 export type StorageRow = { id: number; name: string; kind: string; status: string; started_at: string; duration_s: number; raw_bytes: number; raw_files: number; raw_seconds: number; raw_kinds: string[] };
 export type Storage = { disk: { total_bytes: number; free_bytes: number; used_bytes: number }; database_bytes: number | null; raw_bytes: number; min_free_gb: number | null; sessions: StorageRow[] };
 export type AgentRequest = {
@@ -383,8 +435,47 @@ export type AgentState = { hardware: boolean; lan: boolean; pending: AgentReques
 export type AgentAction = { id: number; at: string; session: string; client: string | null; host: string | null; tool: string; args: Record<string, unknown>; result: 'ok' | 'error' | 'denied'; detail: string | null };
 
 export type McpToken = { id: number; name: string; token: string; created: string | null };
-export type McpStatus = { lan: boolean; hardware: boolean; tokens: McpToken[]; server: { up: boolean; error?: string; tools?: { name: string; description: string }[] } };
+export type McpStatus = { lan: boolean; hardware: boolean; library: boolean; tokens: McpToken[]; server: { up: boolean; error?: string; tools?: { name: string; description: string }[] } };
 export type Health = { db: boolean; capture: boolean; mcp: boolean };
+
+/** Sensor library: how a chip talks on I2C and SPI (see api/src/api/chips.py) */
+export type ChipValue = { name: string; unit?: string; expr: string };
+export type ChipRegister = { addr: number; name: string; rw?: 'r' | 'w' | 'rw'; about?: string; fields?: string; bytes?: number; values?: ChipValue[] };
+export type ChipCommand = { code: number; name: string; reply?: number; wait_ms?: number; about?: string; values?: ChipValue[] };
+/** One bus a chip talks on, with that bus's settings and its own register or command table. */
+export type ChipBus = {
+  bus: 'i2c' | 'spi';
+  addresses?: number[]; ports?: number; // I2C
+  read_bit?: number; read_when_set?: boolean; inc_bit?: number; mode?: number; max_hz?: number; // SPI
+  style?: 'registers' | 'commands' | 'switch' | 'basic'; reg_bytes?: 1 | 2; byte_order?: 'big' | 'little';
+  registers?: ChipRegister[]; commands?: ChipCommand[]; bank?: { reg: number; mask: number; about?: string };
+};
+export const CHIP_CATEGORIES = ['sensor', 'switch', 'memory', 'clock', 'display', 'converter', 'gpio', 'other'] as const;
+export type ChipCategory = (typeof CHIP_CATEGORIES)[number];
+/** What a chip measures: a fixed list (the same as api chips.TAGS), several per chip. */
+export const CHIP_TAGS = ['temperature', 'humidity', 'pressure', 'gas', 'co2', 'light', 'spectral', 'uv', 'infrared', 'acceleration',
+  'rotation', 'magnetic', 'distance', 'current', 'voltage', 'power', 'battery', 'analog'] as const;
+export type ChipTag = (typeof CHIP_TAGS)[number];
+export type ChipTable = { name: string; vendor?: string; kind?: string; category?: ChipCategory; tags?: ChipTag[]; buses: ChipBus[]; datasheet?: string; datasheet_url?: string; notes?: string };
+/** built_in: the tracker ships a table by this name; with a source other than 'built-in', someone changed it. */
+export type Chip = { id: number; name: string; body: ChipTable; source: 'built-in' | 'you' | 'agent'; agent: string | null; checked: boolean; built_in: boolean; updated_at: string; boards: string[] };
+export type BoardChip = { name?: string; type?: string; switch?: boolean };
+
+/** now / min / avg / max over the chosen period */
+export type Mmm = { now: number; min: number; avg: number; max: number };
+export type ServiceUse = {
+  name: string; running: boolean; peak: number | null; cpu_peak: number | null;
+  mem: Mmm | null; cpu: Mmm | null; mem_line: number[]; cpu_line: number[];
+};
+export type Resources = {
+  available: boolean; interval_s: number; period_s: number; kept_s: number; since_s: number;
+  host: {
+    cores: number; mem_total: number | null; mem: Mmm | null; cpu: Mmm | null; warn: ('memory' | 'cpu')[]; mem_line: number[]; cpu_line: number[];
+    mem_peak: number | null; cpu_peak: number | null;
+    uptime_s?: number; load?: [number, number, number]; swap_total?: number; swap_used?: number;
+  };
+  services: ServiceUse[];
+};
 
 export class ApiError extends Error {}
 
@@ -475,9 +566,30 @@ export const api = {
   /** The tracker's voltage limit: the UI asks for a confirmation first; the api refuses it to agents. */
   setMaxVoltage: (mv: number) => req<Measurement>('PUT', '/api/measurement/max-voltage', { max_voltage_mv: mv }),
   storage: () => req<Storage>('GET', '/api/storage'),
+  modules: () => req<ModuleInfo[]>('GET', '/api/modules'),
+  setModuleSettings: (name: string, values: Record<string, unknown>) => req<Record<string, unknown>>('PUT', `/api/modules/${name}/settings`, values),
+  /** A module's latest events (Live), after the last one seen. */
+  busChips: (deviceId: number) => req<Record<string, BoardChip>>('GET', `/api/devices/${deviceId}/bus-chips`),
+  setBusChips: (deviceId: number, chips: Record<string, BoardChip>) => req<Record<string, BoardChip>>('PUT', `/api/devices/${deviceId}/bus-chips`, chips),
+  chips: () => req<Chip[]>('GET', '/api/chips'),
+  createChip: (t: ChipTable) => req<Chip>('POST', '/api/chips', t),
+  updateChip: (id: number, t: ChipTable) => req<Chip>('PUT', `/api/chips/${id}`, t),
+  checkChip: (id: number, checked: boolean) => req<Chip>('POST', `/api/chips/${id}/check?checked=${checked}`),
+  restoreChip: (id: number) => req<Chip>('POST', `/api/chips/${id}/restore`),
+  deleteChip: (id: number) => req<{ deleted: number; boards: string[] }>('DELETE', `/api/chips/${id}`),
+  /** The logic analyzer's messages stored with a session (start_idx: the session's sample index), and the stretches
+   *  it decoded or missed. */
+  sessionBus: (id: number, startS?: number, endS?: number) =>
+    req<SessionBus>('GET', `/api/sessions/${id}/bus?${new URLSearchParams({ ...(startS != null ? { start_s: String(startS) } : {}), ...(endS != null ? { end_s: String(endS) } : {}) })}`),
+  moduleLiveEvents: <T>(name: string, afterSeq: number) => req<T[]>('GET', `/api/modules/${name}/events/live?after_seq=${afterSeq}&limit=2000`),
+  /** The logic analyzer: decode the last seconds of its buffer (the transactions also land in the Live list). */
+  /** The logic analyzer: decode live (the newest second, every second) for the next 30 s, or stop. */
+  analyzerLive: (on: boolean) => req<{ live: boolean }>('POST', '/api/modules/analyzer/live', { on }),
+  analyzerDecode: <T>(seconds: number) => req<T>('POST', '/api/modules/analyzer/decode', { seconds }),
   mcp: () => req<McpStatus>('GET', '/api/mcp'),
   setMcpLan: (lan: boolean) => req<McpStatus>('PUT', '/api/mcp', { lan }),
   setMcpHardware: (hardware: boolean) => req<McpStatus>('PUT', '/api/mcp', { hardware }),
+  setMcpLibrary: (library: boolean) => req<McpStatus>('PUT', '/api/mcp', { library }),
   agents: () => req<AgentState>('GET', '/api/agents'),
   agentAnswer: (id: number, allow: boolean) => req<AgentRequest>('POST', `/api/agents/requests/${id}/answer`, { allow }),
   agentRevoke: (session: string | null = null) => req<{ revoked: number }>('POST', '/api/agents/revoke', { session }),
@@ -486,6 +598,8 @@ export const api = {
   renewMcpToken: (id: number) => req<McpStatus>('POST', `/api/mcp/tokens/${id}/renew`),
   deleteMcpToken: (id: number) => req<McpStatus>('DELETE', `/api/mcp/tokens/${id}`),
   health: () => req<Health>('GET', '/api/health'),
+  resources: (periodS: number) => req<Resources>('GET', `/api/health/resources?period=${periodS}`),
+  analyzerStatus: () => req<{ stream: { running: boolean; rate: number; buffer_s: number; buffered_s: number; error: string | null; restarts: number } | null; devices: { driver: string; conn: string | null; description: string }[] }>('GET', '/api/modules/analyzer/status'),
   ppk2Metadata: () => req<{ raw: string; parsed: Record<string, unknown> }>('GET', '/api/device/ppk2/metadata'),
 
   usb: () => req<UsbStatus>('GET', '/api/device/usb'),

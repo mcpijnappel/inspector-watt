@@ -10,11 +10,13 @@ from typing import Annotated, Literal
 import asyncio
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
 from .client import Api, ApiError
 from .hardware import HW_ANNOTATIONS, HW_META, Hardware
+from .modules import Modules
 
 INSTRUCTIONS = """\
 Inspector Watt: a Nordic PPK2 measures the current of a board (the device under test, e.g. a XIAO ESP32-C6) at
@@ -49,6 +51,13 @@ Concepts:
 - battery life uses the real mix of complete wakes; what-ifs change sleep time, drop phases or change how
   often a whole-wake type happens.
 
+Sensor library (with the logic analyzer module): chip tables shared by every board say how each chip talks, one
+entry per bus (I2C, SPI) with its own registers or commands and formulas that turn bytes into readings, so the Bus
+panel names what it decodes. To add
+a chip from its datasheet: chips_list / chip_get, then chip_save (the user checks it later); put it on the board with
+set_board_chips; bus_decode shows what the board really sends, to check the table against. During a recording the
+analyzer decodes the bus around each wake by itself: session_bus reads a session's messages, named the same way.
+
 Start with list_sessions, then get_session / cycle_summary / search_log. For "what is the device doing now",
 use live_status and live_window. To add phases: search_log for the lines, test_phase_rules, then save_profile.
 """
@@ -57,13 +66,22 @@ HARDWARE_TOOLS = {"dut_power", "power_cycle", "set_voltage", "measuring", "start
                   "save_live_range", "usb_console", "usb_key", "usb_send"}
 
 
+# The sensor library and a board's chips: only with a module that decodes buses (the logic analyzer).
+LIBRARY_TOOLS = {"chips_list", "chip_get", "chip_save", "board_chips", "set_board_chips", "bus_decode", "session_bus"}
+
+
 class TrackerMCP(FastMCP):
     async def list_tools(self):
-        """The hardware tools only while Settings → Agents → Hardware control is on."""
+        """The hardware tools only while Settings → Agents → Hardware control is on; the sensor library's tools only
+        while a bus-decoding module is installed."""
         tools = await super().list_tools()
-        if await hw.enabled():
-            return tools
-        return [t for t in tools if t.name not in HARDWARE_TOOLS]
+        hidden = (set() if await hw.enabled() else HARDWARE_TOOLS) | (set() if await modules.bus_decoding() else LIBRARY_TOOLS)
+        return [t for t in tools if t.name not in hidden]
+
+    async def call_tool(self, name, arguments):
+        if name in LIBRARY_TOOLS and not await modules.bus_decoding():
+            raise ToolError(f"{name} needs the logic analyzer module, and it isn't installed")
+        return await super().call_tool(name, arguments)
 
 
 mcp = TrackerMCP(
@@ -78,6 +96,7 @@ mcp = TrackerMCP(
 )
 api = Api()
 hw = Hardware(api)
+modules = Modules(api)
 
 SessionId = Annotated[int, Field(description="Session id (from list_sessions)")]
 StartS = Annotated[float | None, Field(description="Start, seconds since the session started (default: the start)")]
@@ -380,6 +399,209 @@ async def save_profile(
     if link_session_id is not None:
         await api.request("PATCH", f"/api/sessions/{link_session_id}", json={"profile_id": p["id"]})
     return {"profile": p, "linked_session": link_session_id}
+
+
+# the sensor library and a board's chips -------------------------------------------------------------------------
+class ChipValue(BaseModel):
+    name: str = Field(description="What it is, e.g. temperature")
+    unit: str = Field("", description="e.g. °C, %RH, counts")
+    expr: str = Field(description="Formula over the bytes that came back: numbers, + - * /, brackets and u8(i) s8(i) "
+                                  "u16(i) s16(i) (big-endian), u16le(i) s16le(i), u24(i), u32(i) u32le(i); i = index of "
+                                  "the first byte. E.g. -45 + 175 * u16(0) / 65535")
+
+
+class ChipRegister(BaseModel):
+    addr: int = Field(description="Register address (a number; 0x44 = 68)")
+    name: str = Field(description="Name as in the datasheet, e.g. STATUS2")
+    rw: Literal["r", "w", "rw"] = "rw"
+    about: str = Field("", description="What it is, one line")
+    fields: str = Field("", description="Its bits, e.g. bit 6 AVALID · bits 2:0 gain")
+    bytes: int | None = Field(None, description="How many bytes a read returns, when not the chip's reg_bytes")
+    values: list[ChipValue] = Field([], description="Readings from what a read returns")
+
+
+class ChipCommand(BaseModel):
+    code: int = Field(description="Command code (a number)")
+    name: str = Field(description="e.g. measure (high precision)")
+    reply: int = Field(0, description="Bytes it answers with (read separately, after the wait)")
+    wait_ms: float | None = Field(None, description="Time before the answer is ready")
+    about: str = ""
+    values: list[ChipValue] = Field([], description="Readings from the answer")
+
+
+class ChipBank(BaseModel):
+    reg: int = Field(description="The register with the bank or page bit")
+    mask: int = Field(description="The bit(s) that pick the bank, e.g. 0x10")
+    about: str = Field("", description="Which bank holds which registers")
+
+
+class ChipBus(BaseModel):
+    bus: Literal["i2c", "spi"] = Field(description="The bus this entry is for; one entry per bus the chip can use")
+    addresses: list[int] = Field([], description="I2C: the 7-bit addresses it can answer at (numbers)")
+    read_bit: int | None = Field(None, description="SPI: the bit of the first byte that says read or write (usually 0x80)")
+    read_when_set: bool | None = Field(None, description="SPI: True (default) = that bit set means read")
+    inc_bit: int | None = Field(None, description="SPI: auto-increment bit, if any (ST: 0x40)")
+    mode: int | None = Field(None, description="SPI mode 0-3 (leave out when the chip takes more than one)")
+    max_hz: int | None = Field(None, description="SPI: highest clock the datasheet allows, in Hz")
+    style: Literal["registers", "commands", "switch", "basic"] = Field(
+        "basic", description="registers: write a register address then read / write address + data. commands: a "
+                             "command, the answer read later. switch: an I2C switch (bit n opens port n). basic: no table")
+    reg_bytes: Literal[1, 2] = Field(1, description="Data bytes per register")
+    byte_order: Literal["big", "little"] = "big"
+    registers: list[ChipRegister] = Field([], description="This bus's registers (repeat them for each bus, or differ)")
+    commands: list[ChipCommand] = []
+    ports: int | None = Field(None, description="I2C switch: number of ports")
+    bank: ChipBank | None = Field(None, description="Only for chips that page their registers (AS7343, BME680 on SPI)")
+
+
+class ChipTable(BaseModel):
+    name: str = Field(description="Chip type, e.g. SHT4x, VEML7700 (a family name when the variants share a table)")
+    vendor: str = ""
+    kind: str = Field("", description="What it is, e.g. Ambient light")
+    category: Literal["sensor", "switch", "memory", "clock", "display", "converter", "gpio", "other"] | None = Field(
+        None, description="For the library's type filter: switch = I2C switch/mux, converter = ADC, current or battery "
+                          "monitor, gpio = GPIO expander")
+    tags: list[Literal["temperature",  # the same list as api chips.TAGS "humidity", "pressure", "gas", "co2", "light", "spectral", "uv", "infrared",
+                       "acceleration", "rotation", "magnetic", "distance", "current", "voltage", "power", "battery",
+                       "analog"]] = Field([], description="What it measures, as many as fit (its main functions only, "
+                                                          "not e.g. an accelerometer's on-chip temperature sensor)")
+    buses: list[ChipBus] = Field(description="One entry per bus it talks on (I2C, SPI), each with its own settings and table")
+    datasheet: str = Field("", description="Which datasheet (title, document number, revision) the table comes from")
+    datasheet_url: str = Field("", description="Link to that datasheet (https://...)")
+    notes: str = ""
+
+
+@mcp.tool()
+async def chips_list() -> dict:
+    """The sensor library: every chip type with its addresses, how complete its table is, whether it's checked
+    (built-in tables are checked against their datasheet by the project; an agent's table until a person checks it),
+    and which boards use it."""
+    rows = await api.get("/api/chips")
+    def bus(b: dict) -> dict:
+        return {"bus": b["bus"], **({"addresses": [hex(a) for a in b.get("addresses", [])]} if b["bus"] == "i2c" else {}),
+                "style": b.get("style", "basic"), "registers": len(b.get("registers", [])), "commands": len(b.get("commands", []))}
+    return {"chips": [{"name": r["name"], "vendor": r["body"].get("vendor", ""), "kind": r["body"].get("kind", ""),
+                       "category": r["body"].get("category"), "tags": r["body"].get("tags", []),
+                       "buses": [bus(b) for b in r["body"].get("buses", [])],
+                       "source": r["source"], "checked": r["checked"], "boards": r["boards"]} for r in rows]}
+
+
+@mcp.tool()
+async def chip_get(name: Annotated[str, Field(description="Chip type name, e.g. AS7343")]) -> dict:
+    """One chip table from the sensor library, in the form chip_save takes."""
+    for r in await api.get("/api/chips"):
+        if r["name"].lower() == name.lower():
+            return {"table": r["body"], "source": r["source"], "agent": r["agent"], "checked": r["checked"], "boards": r["boards"]}
+    raise ApiError(f"{name} is not in the sensor library (chips_list shows what is)")
+
+
+@mcp.tool()
+async def chip_save(table: ChipTable, ctx: Context) -> dict:
+    """Add a chip type to the sensor library, or replace its table (matched by name), e.g. from its datasheet.
+    Only put in what the datasheet says: leave out registers or formulas you're not sure of, and name the datasheet
+    and its revision. What you save is marked "by agent, not checked" until the user checks it in Settings → Devices &
+    sensors → Sensor library; saving over a built-in table makes it yours (the user can put the built-in back). Needs
+    "Agents may edit the sensor library" in Settings → Agents; if it's off, ask the user to switch it on."""
+    body = table.model_dump(exclude_none=True)
+    body["buses"] = [b.model_dump(exclude_none=True) for b in table.buses]
+    who = hw.client_name(ctx)
+    for r in await api.get("/api/chips"):
+        if r["name"].lower() == table.name.lower():
+            saved = await api.request("PUT", f"/api/chips/{r['id']}", json=body, agent=who)
+            return {"updated": saved["name"], "checked": saved["checked"], "boards": saved["boards"]}
+    saved = await api.request("POST", "/api/chips", json=body, agent=who)
+    return {"added": saved["name"], "checked": saved["checked"]}
+
+
+ChipKey = Annotated[str, Field(description="Where the chip sits: m:<address> on the main bus, <port>:<address> behind "
+                                           "an I2C switch; address in decimal, e.g. m:68 (0x44) or 2:16 (0x10 on port 2); "
+                                           "spi for the SPI chip on the logic analyzer's chip select")]
+
+
+class BoardChip(BaseModel):
+    type: str | None = Field(None, description="Chip type from the sensor library (chips_list)")
+    name: str = Field("", description="Its name on this board, e.g. Light north; empty = the type's name")
+
+
+async def _board(device_id: int | None) -> dict:
+    if device_id is None:
+        d = await api.get("/api/devices/active")
+        if not d:
+            raise ApiError("no board on the bench: give device_id (list_sessions shows device names)")
+        return d
+    for d in await api.get("/api/devices"):
+        if d["id"] == device_id:
+            return d
+    raise ApiError(f"no device {device_id}")
+
+
+@mcp.tool()
+async def board_chips(device_id: Annotated[int | None, Field(description="Device id; default: the board on the bench")] = None) -> dict:
+    """The chips on a board's I2C bus: where each sits (main bus or a switch port, address), its type from the
+    sensor library and its name."""
+    d = await _board(device_id)
+    chips = await api.get(f"/api/devices/{d['id']}/bus-chips")
+    return {"device": {"id": d["id"], "name": d.get("name")}, "chips": chips}
+
+
+@mcp.tool()
+async def set_board_chips(
+    chips: Annotated[dict[ChipKey, BoardChip], Field(description="Chips to add or change, by where they sit")],
+    remove: Annotated[list[ChipKey], Field(description="Chips to take off the board")] = [],
+    device_id: Annotated[int | None, Field(description="Device id; default: the board on the bench")] = None,
+) -> dict:
+    """Put chips from the sensor library on a board, rename them or take them off (the others stay as they are).
+    Needs "Agents may edit the sensor library" in Settings → Agents."""
+    d = await _board(device_id)
+    now = await api.get(f"/api/devices/{d['id']}/bus-chips")
+    for k in remove:
+        now.pop(k, None)
+    for k, c in chips.items():
+        now[k] = {**now.get(k, {}), **c.model_dump(exclude_none=True)}
+    saved = await api.request("PUT", f"/api/devices/{d['id']}/bus-chips", json=now)
+    return {"device": {"id": d["id"], "name": d.get("name")}, "chips": saved}
+
+
+@mcp.tool()
+async def bus_decode(seconds: Annotated[float, Field(gt=0, le=30, description="How many of the last seconds")] = 5) -> dict:
+    """Decode the logic analyzer's last seconds of I2C/SPI (it keeps 30 s) without putting them on the timeline: the
+    messages (address, writes and reads with their bytes, NACK) with times, and the board's chips. Use it to check a
+    chip table against what the board really sends. Needs the analyzer module, streaming."""
+    r = await api.request("POST", "/api/modules/analyzer/decode", json={"seconds": seconds, "post": False})
+    items = r.get("items", [])
+    out = [{"time": iso(i["t"]), "kind": i["kind"], **{k: v for k, v in i["data"].items() if k != "label"}} for i in items[:400]]
+    chips = {}
+    try:
+        d = await api.get("/api/devices/active")
+        if d:
+            chips = await api.get(f"/api/devices/{d['id']}/bus-chips")
+    except ApiError:
+        pass
+    return {"seconds": seconds, "found": r.get("found"), "shown": len(out), "truncated": r.get("truncated") or len(items) > 400,
+            "messages": out, "board_chips": chips}
+
+
+@mcp.tool()
+async def session_bus(
+    session_id: SessionId,
+    start_s: StartS = None, end_s: EndS = None,
+    cycle: Annotated[int | None, Field(ge=0, description="One cycle (index from 0, as cycle_summary / get_cycle count "
+                                                         "them) instead of start_s / end_s")] = None,
+    cycle_type: Annotated[str | None, Field(description="The cycle's type (default: all wakes)")] = None,
+    chip: Annotated[str | None, Field(description="Only chips whose name, type or place contains this, e.g. VEML "
+                                                  "or port 2")] = None,
+    limit: Annotated[int, Field(ge=1, le=2000)] = 300,
+) -> dict:
+    """The I2C / SPI messages the logic analyzer decoded during a recording (around each wake, or all of it), read
+    only. Each message: time (t_s, session seconds), chip (its name on the board, else its type), where it sits
+    (m:0x44 on the main bus, port 2:0x10 behind the I2C switch), kind (reg = register read, set = register write,
+    cmd = command and its answer, probe, read, write, spi), the register or command name and readings from the
+    sensor library, and the bytes. The same message repeated in a row is one entry with times, every_ms and the last
+    reading. decoded.missed: stretches the analyzer couldn't decode (and why)."""
+    if cycle is not None:
+        c = await api.get(f"/api/sessions/{session_id}/cycles", type=cycle_type, index=cycle)
+        start_s, end_s = c["start_s"], c["end_s"]
+    return await api.get(f"/api/sessions/{session_id}/bus/named", start_s=start_s, end_s=end_s, chip=chip, limit=limit)
 
 
 # the board's USB console and firmware uploads (read-only) ---------------------------------------------------------

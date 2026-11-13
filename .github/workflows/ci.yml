@@ -1,6 +1,6 @@
 # Tests on every push and pull request to dev and main. Images for amd64 and arm64 on pushes to main (tag
 # "latest") and on version tags v1.2.3 (tags "1.2.3", "1.2"), only in the public repository, to
-# ghcr.io/mcpijnappel/inspector-watt-{capture,api,mcp,web}. The database is the stock TimescaleDB image.
+# ghcr.io/mcpijnappel/inspector-watt-{capture,api,mcp,web,analyzer}. The database is the stock TimescaleDB image.
 name: CI
 
 on:
@@ -25,11 +25,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [capture, api, mcp-server]
+        service: [capture, api, mcp-server, modules/analyzer]
     steps:
       - uses: actions/checkout@v4
-      - run: docker build --target test -t test-${{ matrix.service }} ${{ matrix.service }}
-      - run: docker run --rm test-${{ matrix.service }}
+      - run: docker build --target test -t test-${{ strategy.job-index }} ${{ matrix.service }}
+      - run: docker run --rm test-${{ strategy.job-index }}
 
   # tools/pst_flash.py runs on the user's machine: test it on the oldest and newest Python it supports
   tools:
@@ -76,6 +76,7 @@ jobs:
           - { name: api, context: api, target: runtime }
           - { name: mcp, context: mcp-server, target: runtime }
           - { name: web, context: frontend, target: "" }
+          - { name: analyzer, context: modules/analyzer, target: runtime }
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3

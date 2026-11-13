@@ -1,0 +1,27 @@
+# The logic analyzer module (issue #12): one container with sigrok-cli. Included by the root compose.yaml with
+# project_directory ".", so paths here are relative to the repository root. Switched on with the compose profile:
+# COMPOSE_PROFILES=analyzer in .env, then ./dc up -d.
+services:
+  analyzer:
+    profiles: [analyzer]
+    image: ghcr.io/mcpijnappel/inspector-watt-analyzer:${IMAGE_TAG:-latest}
+    build:
+      context: ./modules/analyzer
+      target: runtime
+    restart: unless-stopped
+    cgroup_parent: ${CGROUP_PREFIX:-pst}-analyzer.slice  # its CPU and memory on Settings → Health
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      API_URL: http://api:8000
+      ANALYZER_DRIVER: ${ANALYZER_DRIVER:-fx2lafw}  # sigrok driver; the simulator uses "demo"
+      DATA_DIR: /data
+    # The analyzer is a raw USB device (major 189): libusb looks for it under /dev/bus/usb.
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb:ro
+      - ${DATA_DIR:-./data}:/data:z
+    device_cgroup_rules:
+      - "c 189:* rmw"
+    security_opt:
+      - label=disable  # SELinux: let the container open the host's USB devices
+    depends_on:
+      - api

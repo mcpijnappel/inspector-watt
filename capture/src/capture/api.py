@@ -22,6 +22,7 @@ from .ringbuffer import bin_stats, to_json_list
 from .service import CaptureService, DeviceError
 from . import battery
 from .flash import Flasher, FlashError, FlashRequest, Image
+from .modules import ModuleEvents
 from .sessions import SessionError, SessionManager
 from .store import Store
 from .usb import UsbError
@@ -96,6 +97,20 @@ class FlashIn(BaseModel):
                    "app_only": self.app_only} if self.family == "esp32" else {}
         return FlashRequest(images, self.chip, self.family, options, self.meta, self.on_recording,
                             self.when_asleep, self.full_flash, self.power)
+
+
+class ModuleEventIn(BaseModel):
+    kind: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9_.-]+$")
+    t: float  # unix time (this machine's clock)
+    end_t: float | None = None
+    data: dict = {}
+
+
+class ModuleEventsIn(BaseModel):
+    module: str = Field(min_length=1, max_length=60, pattern=r"^[a-z0-9_-]+(:[a-z0-9_-]+)?$")  # "analyzer:1"
+    items: list[ModuleEventIn] = Field(max_length=2000)
+    live: bool = True  # into the Live list
+    record: bool = True  # into the running recording
 
 
 class ChoiceIn(BaseModel):
@@ -301,6 +316,26 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.get("/battery/chemistries")
     def battery_chemistries():
         return battery.chemistries()
+
+    # modules: their events onto the timeline (and into the running recording) ------------------------------
+    module_events = ModuleEvents(svc.clock, sessions)
+    app.state.module_events = module_events
+
+    @app.post("/modules/events")
+    def add_module_events(body: ModuleEventsIn):
+        return module_events.add(body.module, [it.model_dump() for it in body.items], body.live, body.record)
+
+    @app.get("/modules/recording")
+    def module_recording(after_seq: int = 0):
+        """For modules: the running recording and its wakes (unix times), to decode the bus around each."""
+        if sessions is None:
+            return {"recording": None, "wakes": [], "last_seq": 0}
+        return sessions.wake_feed(after_seq)
+
+    @app.get("/modules/events/live")
+    def live_module_events(after_seq: int = 0, module: str | None = None, since_idx: int | None = None,
+                           limit: int = Query(2000, le=5000)):
+        return module_events.live(after_seq, module, since_idx, limit)
 
     @app.get("/uart/lines")
     def uart_lines(after_seq: int = -1, limit: int = Query(1000, le=10000)):

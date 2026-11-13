@@ -46,7 +46,7 @@ Zephyr prints `*** Booting Zephyr OS build … ***` on every boot, so on nRF boa
   Upload early. `Rebooting` is fine (it isn't the word `booting`).
 - **Timestamps aren't needed.** The tracker timestamps every line itself (they arrive 1–2 ms after the
   work starts; the Sleep boundary is moved to where the current actually drops).
-- The UART runs at **115200 baud** unless you set another rate for the device in Settings → Devices.
+- The UART runs at **115200 baud** unless you set another rate for the device in Settings → Devices & sensors.
 
 ## Example
 
@@ -149,7 +149,7 @@ A key is 1 to 8 characters without spaces; pressing the button sends it, without
 
 The Default profile is a starting point. For other phases (or another order) make your own profile: **Phase
 rules** on a session page, or Settings → Phase profiles. Each rule is a piece of text or a regular expression;
-the first rule starts a cycle. A device (Settings → Devices) picks the profile its new sessions get.
+the first rule starts a cycle. A device (Settings → Devices & sensors) picks the profile its new sessions get.
 
 Agents can do this too: the MCP tools `test_phase_rules` and `test_cycle_types` try rules on a recorded
 session, and `save_profile` stores them.

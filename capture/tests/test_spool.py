@@ -115,3 +115,53 @@ def test_save_range_from_live_buffer(tmp_path):
     assert batch["uart"][0][2] == 50_000  # session sample index
     assert sum(s["n_samples"] for s in batch["segments"]) == 300_000
     assert store.created[0][2]["saved_from_buffer"] is True
+
+
+def test_wake_feed_for_modules(tmp_path):
+    """The analyzer learns the recording's wakes (unix times) from the feed, and its events for the last wake are
+    still stored for a while after the recording stopped."""
+    import time
+
+    import numpy as np
+    from capture.recorder import SessionConfig
+    from capture.sessions import Active
+    svc = CaptureService(Config(ppk2_port="sim://", uart_port="sim://", ring_seconds=10))
+    store = RecordingStore()
+    mgr = SessionManager(svc, store, tmp_path, 0)
+    assert mgr.wake_feed() == {"recording": None, "wakes": [], "last_seq": 0}
+    svc.clock.observe(time.monotonic(), 0)  # sample 0 is now
+    cfg = SessionConfig(kind="detail", wake_threshold_a=1e-3, hold_s=0.05)
+    rec = mgr._recorder(42, datetime.now(timezone.utc), 0, 0, cfg)
+    mgr.active = Active(42, "t", "detail", rec.started_at, cfg, rec)
+    def feed(seconds, amps):
+        n = int(seconds * 100_000)
+        svc.ring.append(np.full(n, amps, np.float32), np.zeros(n, np.uint8))
+    feed(1.0, 2e-6)
+    feed(0.2, 5e-3)  # a wake at 1.0-1.2 s
+    feed(0.5, 2e-6)
+    feed(0.3, 5e-3)  # a wake that's still going on
+    b = rec.tick()
+    mgr._note_wakes(mgr.active, b)
+    t0 = mgr._wall_t(0)
+    f = mgr.wake_feed()
+    assert f["recording"]["id"] == 42 and f["recording"]["stopped_t"] is None
+    assert abs(f["recording"]["started_t"] - t0) < 1e-6
+    assert abs(f["recording"]["processed_t"] - t0 - 2.0) < 1e-6
+    (w,) = f["wakes"]
+    assert abs(w["start_t"] - t0 - 1.0) < 1e-6 and abs(w["end_t"] - t0 - 1.2) < 1e-6
+    assert abs(f["open_start_t"] - t0 - 1.7) < 1e-6
+    assert mgr.wake_feed(f["last_seq"])["wakes"] == []  # only what's new
+    mgr.stop_session()
+    f = mgr.wake_feed(f["last_seq"])
+    assert f["recording"]["id"] == 42 and abs(f["recording"]["stopped_t"] - t0 - 2.0) < 1e-6
+    assert len(f["wakes"]) == 1 and f["open_start_t"] is None  # stopping closed the open wake
+    # the analyzer's messages for that last wake arrive after the stop: still stored with the recording
+    assert mgr.note_event("i2c", 180_000, 180_050, module="analyzer:1", addr=0x44)
+    assert not mgr.note_event("i2c", 250_000, None, module="analyzer:1")  # after the stop: not part of it
+    assert not mgr.note_event("flash", 180_000)  # only modules' events
+    mgr._flush_late()
+    sid, batch = store.written[-1]
+    (ev,) = batch["events"]
+    assert sid == 42 and ev["module"] == "analyzer:1" and ev["start_idx"] == 180_000 and ev["data"] == {"addr": 0x44}
+    mgr._ended.until = 0  # later on: forgotten
+    assert mgr.wake_feed()["recording"] is None and not mgr.note_event("i2c", 180_000, module="analyzer:1")

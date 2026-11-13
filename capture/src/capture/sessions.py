@@ -13,6 +13,7 @@ import logging
 import pickle
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,10 @@ BATTERY_LOG_MV = 10  # ... and a 'battery' event every 10 mV
 # After a restart the PPK2 still outputs the last battery voltage; this close to the target counts as "still set".
 BATTERY_KEEP_MV = 50
 SPOOL_EVERY_S = 10
+WAKE_FEED_KEEP = 1000  # recent wakes kept for modules (the logic analyzer decodes the bus around each)
+# A module's events for a recording that just stopped are still stored for a while: the analyzer decodes the last
+# wake only after it ends (and after the hold time), which can be after the stop.
+AFTER_STOP_S = 60.0
 
 
 class SessionError(RuntimeError):
@@ -55,6 +60,15 @@ class Active:
     rec: SessionRecorder
     bat_set_at: float = 0.0  # monotonic time of the last battery voltage change
     bat_logged_mv: int | None = None
+
+
+@dataclass
+class Ended:
+    """The recording that stopped last: modules' events for it are still stored until `until` (monotonic)."""
+    id: int
+    rec: SessionRecorder
+    stop_idx: int  # stream index where it stopped
+    until: float
 
 
 class SessionManager:
@@ -77,6 +91,10 @@ class SessionManager:
         self._last_spool_check = 0.0
         self.spool_dir = data_dir / "spool"
         svc.ppk2.on_resume = self._on_ppk2_resume
+        self._feed: deque[dict] = deque(maxlen=WAKE_FEED_KEEP)  # wakes of the running recording, for modules
+        self._feed_seq = 0
+        self._ended: Ended | None = None
+        self._late: list[tuple[int, dict]] = []  # (session id, event) for the recording that just stopped
 
     def settings(self) -> dict:
         return {"min_free_gb": round(self.min_free_bytes / 2**30, 2), "raw_mantissa_bits": self.mantissa_bits}
@@ -118,6 +136,11 @@ class SessionManager:
     def _wall_of(self, stream_idx: int) -> datetime:
         mono = self.svc.clock.offset + stream_idx * SAMPLE_PERIOD_S
         return datetime.fromtimestamp(time.time() - (time.monotonic() - mono), timezone.utc)
+
+    def _wall_t(self, stream_idx: int) -> float | None:
+        """Unix time of a stream index on this machine's clock (what modules use), or None without a PPK2 clock."""
+        off = self.svc.clock.offset
+        return None if off is None else time.time() - (time.monotonic() - (off + stream_idx * SAMPLE_PERIOD_S))
 
     def _stream_idx_of(self, wall: datetime) -> int:
         mono = time.monotonic() - (time.time() - wall.timestamp())
@@ -202,7 +225,9 @@ class SessionManager:
             a = self.active
             if not a:
                 raise SessionError("no session running")
-            self._pending = merge_batches(self._pending, a.rec.tick(final=True))
+            final = a.rec.tick(final=True)
+            self._note_wakes(a, final)
+            self._pending = merge_batches(self._pending, final)
             for _ in range(10):
                 if self._flush():
                     break
@@ -214,6 +239,7 @@ class SessionManager:
                 self.store.finish_session(a.id, "stopped", a.rec.ts(a.rec.cursor))
             except StoreUnavailable as e:
                 self.last_error = str(e)
+            self._ended = Ended(a.id, a.rec, a.rec.cursor, time.monotonic() + AFTER_STOP_S)
             self.active = None
             if dut_off:
                 try:
@@ -223,13 +249,54 @@ class SessionManager:
             log.info("session %d stopped", a.id)
             return {"stopped": a.id}
 
-    def note_event(self, kind: str, start_idx: int, end_idx: int | None = None, **data) -> bool:
-        """An event from outside the recorder (e.g. a firmware flash) on the running session; False if none runs."""
+    def note_event(self, kind: str, start_idx: int, end_idx: int | None = None, *, module: str | None = None,
+                   **data) -> bool:
+        """An event from outside the recorder (a firmware flash, a module's decoded bus transaction) on the running
+        session; False if none runs."""
         with self._lock:
-            if not self.active:
-                return False
-            self.active.rec.note(kind, start_idx, end_idx, **data)
-            return True
+            if self.active:
+                self.active.rec.note(kind, start_idx, end_idx, module=module, **data)
+                return True
+            e = self._ended
+            if module and e and time.monotonic() < e.until and e.rec.s0 <= start_idx < e.stop_idx:
+                end = None if end_idx is None else min(end_idx, e.stop_idx)
+                self._late.append((e.id, e.rec._event(kind, start_idx, end, data=data, module=module)))
+                return True
+            return False
+
+    # wakes for modules -------------------------------------------------------------------------------------
+    def _note_wakes(self, a: Active, batch: dict) -> None:
+        """Wakes the recorder just closed -> the feed modules read (GET /modules/recording)."""
+        for ev in batch["events"]:
+            if ev["kind"] != "wake" or ev["end_idx"] is None:
+                continue
+            t0, t1 = self._wall_t(a.rec.s0 + ev["start_idx"]), self._wall_t(a.rec.s0 + ev["end_idx"])
+            if t0 is None or t1 is None:
+                continue
+            self._feed_seq += 1
+            self._feed.append({"seq": self._feed_seq, "session_id": a.id, "start_t": t0, "end_t": t1})
+
+    def wake_feed(self, after_seq: int = 0) -> dict:
+        """For modules: the running recording (or the one that just stopped, while its events are still taken), the
+        wakes it found since `after_seq` with their unix times, the one going on now, and how far the recorder got
+        (wakes are known up to there). A module that decodes around wakes polls this."""
+        with self._lock:
+            a, e = self.active, self._ended
+            if a:
+                sid, rec, stop = a.id, a.rec, None
+            elif e and time.monotonic() < e.until:
+                sid, rec, stop = e.id, e.rec, e.stop_idx
+            else:
+                return {"recording": None, "wakes": [], "last_seq": self._feed_seq}
+            w = rec._wake
+            return {
+                "recording": {"id": sid, "started_t": self._wall_t(rec.s0),
+                              "stopped_t": None if stop is None else self._wall_t(stop),
+                              "processed_t": self._wall_t(rec.cursor if stop is None else stop)},
+                "open_start_t": self._wall_t(w.start) if (w is not None and stop is None) else None,
+                "wakes": [x for x in self._feed if x["seq"] > after_seq and x["session_id"] == sid],
+                "last_seq": self._feed_seq,
+            }
 
     def _recorder(self, sid: int, started_at: datetime, s0: int, first_idx: int, cfg: SessionConfig,
                   charge_c: float = 0.0) -> SessionRecorder:
@@ -336,9 +403,12 @@ class SessionManager:
                 self._last_spool_check = time.monotonic()
                 self._replay_spool()
             with self._lock:
+                self._flush_late()
                 if self.active:
                     try:
-                        self._pending = merge_batches(self._pending, self.active.rec.tick())
+                        b = self.active.rec.tick()
+                        self._note_wakes(self.active, b)
+                        self._pending = merge_batches(self._pending, b)
                     except Exception:
                         log.exception("session %d: recorder tick failed", self.active.id)
                     self._flush()
@@ -393,6 +463,22 @@ class SessionManager:
             except StoreUnavailable:
                 return False
         return True
+
+    def _flush_late(self) -> None:
+        """Module events for the recording that stopped last (they keep it short of a running recording's batch)."""
+        if not self._late:
+            return
+        late, self._late = self._late, []
+        by_sid: dict[int, list[dict]] = {}
+        for sid, ev in late:
+            by_sid.setdefault(sid, []).append(ev)
+        for sid, evs in by_sid.items():
+            b = new_batch()
+            b["events"] = evs
+            try:
+                self.store.write_batch(sid, b)
+            except StoreUnavailable:
+                self._spool(sid, b)
 
     def _flush(self) -> bool:
         a = self.active

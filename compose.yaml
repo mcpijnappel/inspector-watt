@@ -4,12 +4,22 @@ name: inspector-watt
 # instead). The database is the stock TimescaleDB image; the api creates and migrates the schema.
 # IMAGE_TAG picks a version (e.g. 1.2); the simulator stack uses its own tag so its builds stay apart.
 
+# Modules (modules/<name>/, optional extras with their own containers): each one's services belong to a compose
+# profile, so they only start when switched on in .env, e.g. COMPOSE_PROFILES=analyzer. Paths in their compose
+# files are relative to this folder.
+include:
+  - path: modules/analyzer/compose.yaml
+    project_directory: .
+
+# Every service runs in its own named cgroup slice (pst-api.slice, …; the simulator stack uses CGROUP_PREFIX=pstsim),
+# so the api can show each one's CPU and memory (Settings → Health) by reading the host's cgroup counters read-only.
 x-database-url: &database-url postgresql://tracker:${DB_PASSWORD:-tracker}@db:5432/tracker
 
 services:
   db:
     image: docker.io/timescale/timescaledb:2.30.2-pg18
     restart: unless-stopped
+    cgroup_parent: ${CGROUP_PREFIX:-pst}-db.slice
     environment:
       POSTGRES_DB: tracker
       POSTGRES_USER: tracker
@@ -33,6 +43,7 @@ services:
       context: ./capture
       target: runtime
     restart: unless-stopped
+    cgroup_parent: ${CGROUP_PREFIX:-pst}-capture.slice
     user: "${UID:-1000}:${GID:-1000}"  # files in ./data belong to you; device ACLs are granted to this uid
     environment:
       PPK2_PORT: ${PPK2_PORT:-/host-dev/ppk2}
@@ -69,6 +80,7 @@ services:
       context: ./api
       target: runtime
     restart: unless-stopped
+    cgroup_parent: ${CGROUP_PREFIX:-pst}-api.slice
     user: "${UID:-1000}:${GID:-1000}"
     environment:
       DATABASE_URL: *database-url
@@ -78,8 +90,10 @@ services:
       MCP_TOKEN: ${MCP_TOKEN:-}  # only the first time: LAN access for agents is then managed in Settings → Agents
       FLASH_TOKEN: ${FLASH_TOKEN:-}  # only the first time: the upload token (random if empty)
       OTA_PUBLIC_PORT: ${OTA_PORT:-3232}  # shown in Settings → Firmware upload (inside, it's always 3232)
+      CGROUP_PREFIX: ${CGROUP_PREFIX:-pst}
     volumes:
       - ${DATA_DIR:-./data}:/data:z
+      - /sys/fs/cgroup:/host-cgroup:ro  # each service's CPU and memory counters (read only)
     depends_on:
       db:
         condition: service_healthy
@@ -102,6 +116,7 @@ services:
       context: ./mcp-server
       target: runtime
     restart: unless-stopped
+    cgroup_parent: ${CGROUP_PREFIX:-pst}-mcp.slice
     user: "${UID:-1000}:${GID:-1000}"
     environment:
       API_URL: http://api:8000
@@ -117,6 +132,7 @@ services:
       additional_contexts:
         tools: ./tools  # pst_flash.py, the upload client, offered as a download (Settings → Firmware upload)
     restart: unless-stopped
+    cgroup_parent: ${CGROUP_PREFIX:-pst}-web.slice
     depends_on:
       - api
       - capture

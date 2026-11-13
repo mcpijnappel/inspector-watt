@@ -103,9 +103,9 @@ class Store:
                 for ev in batch["events"]:
                     cur.execute(
                         "INSERT INTO events (session_id, kind, start_idx, end_idx, ts, end_ts, peak_a, mean_a, "
-                        "charge_c, data) VALUES (%(session_id)s, %(kind)s, %(start_idx)s, %(end_idx)s, %(ts)s, "
-                        "%(end_ts)s, %(peak_a)s, %(mean_a)s, %(charge_c)s, %(data)s)",
-                        {**ev, "session_id": session_id, "data": Jsonb(ev.get("data", {}))})
+                        "charge_c, data, module) VALUES (%(session_id)s, %(kind)s, %(start_idx)s, %(end_idx)s, %(ts)s, "
+                        "%(end_ts)s, %(peak_a)s, %(mean_a)s, %(charge_c)s, %(data)s, %(module)s)",
+                        {**ev, "session_id": session_id, "data": Jsonb(ev.get("data", {})), "module": ev.get("module")})
                 for seg in batch["segments"]:
                     cur.execute(
                         "INSERT INTO raw_segments (session_id, kind, start_idx, n_samples, path, bytes) "

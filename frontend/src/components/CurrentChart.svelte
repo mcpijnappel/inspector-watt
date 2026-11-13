@@ -7,6 +7,7 @@
   import { fmtAmpsAxis, fmtRel } from '../lib/format';
   import { theme } from '../lib/theme.svelte';
   import type { ChartBand, ChartCursor } from '../lib/types';
+  import type { ChartScale } from '../lib/lanes';
   import type { Range } from '../lib/live.svelte';
 
   type Props = {
@@ -33,9 +34,11 @@
     height?: number;
     xLabel?: (v: number, latest: number) => string;
     label?: string;
+    /** Called when the x scale or the plot area changes (chip lanes under the chart line up with it). */
+    onscale?: (s: ChartScale) => void;
   };
 
-  let { x, mn, mx, avg, version, log = true, markers = [], alerts = [], cursor = null, showBand = true, showAvg = true, selection = null, bands = [], bandStyle = 'bands', highlights = [], onselect, endLabel = 'now', height = 360, xLabel, label = 'Current over time' }: Props = $props();
+  let { x, mn, mx, avg, version, log = true, markers = [], alerts = [], cursor = null, showBand = true, showAvg = true, selection = null, bands = [], bandStyle = 'bands', highlights = [], onselect, endLabel = 'now', height = 360, xLabel, label = 'Current over time', onscale }: Props = $props();
 
   let host: HTMLDivElement;
   let plot: uPlot | null = null;
@@ -104,7 +107,20 @@
     ctx.restore();
   }
 
+  let lastScale = '';
+  function tellScale(u: uPlot) {
+    if (!onscale) return;
+    const dpr = devicePixelRatio || 1;
+    const s = { min: u.scales.x.min ?? 0, max: u.scales.x.max ?? 1, left: u.bbox.left / dpr, width: u.bbox.width / dpr };
+    const key = `${s.min}|${s.max}|${s.left}|${s.width}`;
+    if (key !== lastScale) {
+      lastScale = key;
+      onscale(s);
+    }
+  }
+
   function drawOverlay(u: uPlot) {
+    tellScale(u);
     const ctx = u.ctx;
     const dpr = devicePixelRatio || 1;
     const { top, left, width, height: h } = u.bbox;

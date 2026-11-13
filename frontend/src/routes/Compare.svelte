@@ -6,6 +6,11 @@
   import { untrack } from 'svelte';
   import CompareChart from '../components/CompareChart.svelte';
   import CompareLog from '../components/CompareLog.svelte';
+  import ChipLanes from '../components/ChipLanes.svelte';
+  import type { BusEvent } from '../lib/bus.svelte';
+  import type { Chips } from '../lib/busfold';
+  import { library } from '../lib/chips.svelte';
+  import { lanesPref, pairLanes, setLanesPref, type ChartScale } from '../lib/lanes';
   import { api, type CycleRow, type PhasesResult, type SessionSummary } from '../lib/api';
   import { ALL, asCycleRow, avgRows, flatPhases, statsFor, typeViews, typicalIndex, usable, type FlatPhase, type TypeView, type UnitRow } from '../lib/cycletypes';
   import { fmtAmps, fmtCharge, fmtSpan } from '../lib/format';
@@ -42,6 +47,14 @@
   let alignNote = $state('');
   let error = $state('');
   let loading = $state(false);
+  // bus messages of both cycles (stored with their sessions), as chip lanes under the overlay
+  let busA = $state.raw<BusEvent[]>([]);
+  let busB = $state.raw<BusEvent[]>([]);
+  let chipsA = $state<Chips>({});
+  let chipsB = $state<Chips>({});
+  let scale = $state<ChartScale | null>(null);
+  let laneHover = $state<{ a: number; b: number; label: string } | null>(null);
+  let showLanes = $state(lanesPref());
   let traceA = $state.raw<Series>({ x: [], y: [] });
   let traceB = $state.raw<Series>({ x: [], y: [] });
   let version = $state(0);
@@ -224,6 +237,21 @@
   });
   const view = $derived(zoom ?? full);
 
+  $effect(() => {
+    const dev = sessA?.device_id;
+    if (dev != null && busA.length) api.busChips(dev).then((c) => (chipsA = c)).catch(() => {});
+  });
+  $effect(() => {
+    const dev = sessB?.device_id;
+    if (dev != null && busB.length) api.busChips(dev).then((c) => (chipsB = c)).catch(() => {});
+  });
+  const P = 1e-5;
+  const lanes = $derived.by(() => {
+    if (!showLanes || !cycA || !cycB) return [];
+    const ta = cycA.t, tb = cycB.t, off = d;
+    return pairLanes([busA, busB], [chipsA, chipsB], [(i) => i * P - ta, (i) => i * P - tb + off]);
+  });
+
   // Traces for the view, both sides. Debounced: nudging fires many changes.
   let traceToken = 0;
   $effect(() => {
@@ -238,11 +266,16 @@
     const t = setTimeout(async () => {
       loading = true;
       try {
-        const [ta, tb] = await Promise.all([
+        const [ta, tb, ba, bb] = await Promise.all([
           api.trace(sa, Math.max(0, ca.t + v.a), ca.t + v.b, 1500),
           api.trace(sb, Math.max(0, cb.t + v.a - off), cb.t + v.b - off, 1500),
+          api.sessionBus(sa, Math.max(0, ca.t + v.a), ca.t + v.b).catch(() => null),
+          api.sessionBus(sb, Math.max(0, cb.t + v.a - off), cb.t + v.b - off).catch(() => null),
         ]);
         if (token !== traceToken) return;
+        busA = ba?.messages ?? [];
+        busB = bb?.messages ?? [];
+        if (busA.length || busB.length) library.ensure();
         traceA = { x: ta.x.map((x) => x - ca.t), y: ta.mean };
         traceB = { x: tb.x.map((x) => x - cb.t + off), y: tb.mean };
         version++;
@@ -614,12 +647,14 @@
 
     <div class="chartwrap" class:busy={loading}>
       <CompareChart a={traceA} b={traceB} {version} {log} {view} {stripsA} {stripsB} onzoom={(r) => (zoom = r)} height={380}
-        cursorX={logHover} onhover={(x) => (chartHover = x)} />
+        cursorX={logHover} onhover={(x) => (chartHover = x)} shade={laneHover} onscale={(sc) => (scale = sc)} />
+      {#if lanes.length}<ChipLanes {lanes} {scale} onhover={(h) => (laneHover = h)} label="Chip lanes: A's bus messages over B's" />{/if}
     </div>
     <div class="legend">
       <span><i class="sw a"></i>A #{side.a.sid} {sessA?.name ?? ''} · cycle {(side.a.cycle ?? 0) + 1}</span>
       <span><i class="sw b"></i>B #{side.b.sid} {sessB?.name ?? ''} · cycle {(side.b.cycle ?? 0) + 1}</span>
       <span class="faint">Coloured strips along the bottom: phases of A (upper) and B (lower)</span>
+      {#if busA.length || busB.length}<label class="lanetog"><input type="checkbox" bind:checked={showLanes} onchange={() => setLanesPref(showLanes)} /> chip lanes (A over B)</label>{/if}
     </div>
   </section>
 
@@ -696,6 +731,8 @@
   .chartwrap { padding: 8px 12px 0 4px; transition: opacity 0.15s; }
   .chartwrap.busy { opacity: 0.7; }
   .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 6px 16px 12px; font-size: 12px; color: var(--muted); }
+  .lanetog { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .lanetog input { margin: 0; accent-color: var(--accent); }
   .tablewrap { overflow-x: auto; }
   table { width: 100%; min-width: 600px; border-collapse: collapse; }
   th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 12px 8px; }

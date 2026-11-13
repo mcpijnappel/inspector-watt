@@ -22,7 +22,10 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 
+from . import chips as chip_library
+from .busnames import fold_repeats, name_session_bus
 from .migrate import migrate
+from .resources import Resources
 from . import ota
 from . import resets as reset_finder
 from .agents import AgentAccess
@@ -50,6 +53,8 @@ async def lifespan(app: FastAPI):
     await migrate(pool)
     await seed_mcp()
     await seed_flash()
+    if (n := await chip_library.seed(q_one, Jsonb)):
+        log.info("sensor library: %d built-in chips added", n)
     ota_transport = None
     if OTA_PORT:
         try:
@@ -57,7 +62,9 @@ async def lifespan(app: FastAPI):
             log.info("Arduino OTA endpoint on UDP %d", OTA_PORT)
         except OSError as e:
             log.warning("no Arduino OTA endpoint: UDP %d: %s", OTA_PORT, e)
+    sampler = asyncio.create_task(resources.run())
     yield
+    sampler.cancel()
     if ota_transport:
         ota_transport.close()
     await pool.close()
@@ -113,6 +120,15 @@ async def ready():
 
 
 # sessions -------------------------------------------------------------------------------------------------
+resources = Resources(prefix=os.environ.get("CGROUP_PREFIX", "pst"))
+
+
+@app.get("/api/health/resources")
+async def health_resources(period: int = Query(3600, ge=60, le=86400)):
+    """CPU and memory of each service and of the machine: now, and min / avg / max over the period (seconds)."""
+    return resources.report(period)
+
+
 @app.get("/api/health")
 async def health():
     db = await q_one("SELECT 1 AS ok")
@@ -120,10 +136,19 @@ async def health():
     return {"db": bool(db), "capture": cap is not None, "mcp": (await mcp_health())["up"]}
 
 
+# Which modules a session used (modules/<name>/: the logic analyzer decoded its bus): per module, how many of its
+# events (bus messages), and the stretches it decoded or missed.
+MODULES_USED = """(SELECT jsonb_object_agg(m, jsonb_build_object('messages', n, 'windows', w, 'missed', x)) FROM (
+                     SELECT split_part(e.module, ':', 1) AS m, count(*) FILTER (WHERE e.kind <> 'bus_window') AS n,
+                            count(*) FILTER (WHERE e.kind = 'bus_window' AND NOT e.data ? 'missed') AS w,
+                            count(*) FILTER (WHERE e.kind = 'bus_window' AND e.data ? 'missed') AS x
+                     FROM events e WHERE e.session_id = s.id AND e.module IS NOT NULL GROUP BY 1) u) AS modules"""
+
+
 @app.get("/api/sessions")
 async def list_sessions():
-    rows = await q_all("""
-        SELECT s.*, d.name AS device_name,
+    rows = await q_all(f"""
+        SELECT s.*, d.name AS device_name, {MODULES_USED},
                (SELECT count(*) FROM events e WHERE e.session_id = s.id AND e.kind = 'wake') AS wakes,
                (SELECT coalesce(sum(bytes), 0)::bigint FROM raw_segments r WHERE r.session_id = s.id) AS raw_bytes
         FROM sessions s LEFT JOIN devices d ON d.id = s.device_id ORDER BY s.id DESC""")
@@ -133,6 +158,7 @@ async def list_sessions():
 @app.get("/api/sessions/{sid}")
 async def session_detail(sid: int):
     s = await get_session(sid)
+    s["modules"] = (await q_one(f"SELECT {MODULES_USED} FROM sessions s WHERE s.id = %s", (sid,)))["modules"]
     s["events"] = {r["kind"]: r["n"] for r in await q_all(
         "SELECT kind, count(*) AS n FROM events WHERE session_id = %s GROUP BY kind", (sid,))}
     s["raw"] = {r["kind"]: {"files": r["files"], "bytes": r["bytes"], "seconds": r["samples"] * SAMPLE_PERIOD_S}
@@ -316,13 +342,15 @@ async def stats(sid: int, start_s: float | None = None, end_s: float | None = No
 @app.get("/api/sessions/{sid}/events")
 async def events(sid: int, kind: str | None = None, start_s: float | None = None, end_s: float | None = None,
                  limit: int = Query(1000, le=20000)):
+    """The session's own events (wakes, gaps, flashes, ...). Modules' events (the analyzer's bus messages, thousands
+    per session) are left out: /bus has them."""
     s = await get_session(sid)
     t0 = s["started_at"]
     a, b = start_s or 0.0, end_s if end_s is not None else s["duration_s"] + 1
     rows = await q_all("""SELECT id, kind, start_idx * %(p)s AS t, end_idx * %(p)s AS end_t, peak_a, mean_a,
                                  charge_c, data
                           FROM events WHERE session_id = %(sid)s AND (%(kind)s::text IS NULL OR kind = %(kind)s)
-                            AND ts >= %(a)s AND ts < %(b)s ORDER BY start_idx LIMIT %(limit)s""",
+                            AND module IS NULL AND ts >= %(a)s AND ts < %(b)s ORDER BY start_idx LIMIT %(limit)s""",
                        {"p": SAMPLE_PERIOD_S, "sid": sid, "kind": kind, "limit": limit,
                         "a": t0 + timedelta(seconds=a), "b": t0 + timedelta(seconds=b)})
     if kind in (None, "reset"):
@@ -332,6 +360,74 @@ async def events(sid: int, kind: str | None = None, start_s: float | None = None
               for i, r in enumerate(await session_resets(s)) if a <= r["t"] < b]
         rows = sorted([*rows, *rs], key=lambda e: e["t"])[:limit]
     return rows
+
+
+BUS_MODULE = "analyzer:%"  # modules whose events are bus messages
+BUS_KINDS = ("i2c", "spi")
+
+
+async def bus_rows(sid: int, a_idx: int, b_idx: int, limit: int) -> tuple[list[dict], list[dict]]:
+    """A session's bus messages that start in [a_idx, b_idx) (session sample indexes, at most limit + 1) and the
+    decoded windows that overlap it."""
+    msgs = await q_all("""SELECT id AS seq, module, kind, start_idx, end_idx, data FROM events
+                          WHERE session_id = %(sid)s AND module LIKE %(m)s AND kind = ANY(%(kinds)s)
+                            AND start_idx >= %(a)s AND start_idx < %(b)s ORDER BY start_idx LIMIT %(n)s""",
+                       {"sid": sid, "m": BUS_MODULE, "kinds": list(BUS_KINDS), "a": a_idx, "b": b_idx, "n": limit + 1})
+    wins = await q_all("""SELECT start_idx, end_idx, data FROM events
+                          WHERE session_id = %(sid)s AND module LIKE %(m)s AND kind = 'bus_window'
+                            AND start_idx < %(b)s AND coalesce(end_idx, start_idx) > %(a)s ORDER BY start_idx""",
+                       {"sid": sid, "m": BUS_MODULE, "a": a_idx, "b": b_idx})
+    return msgs, [{"start_idx": w["start_idx"], "end_idx": w["end_idx"], "messages": w["data"].get("messages", 0),
+                   **({"missed": w["data"]["missed"]} if w["data"].get("missed") else {})} for w in wins]
+
+
+def idx_range(s: dict, start_s: float | None, end_s: float | None) -> tuple[int, int]:
+    a = max(0.0, start_s or 0.0)
+    b = s["duration_s"] + 1 if end_s is None else end_s
+    return int(a / SAMPLE_PERIOD_S), int(math.ceil(b / SAMPLE_PERIOD_S))
+
+
+@app.get("/api/sessions/{sid}/bus")
+async def session_bus(sid: int, start_s: float | None = None, end_s: float | None = None,
+                      limit: int = Query(20000, ge=1, le=50000)):
+    """The logic analyzer's messages stored with the session (as the Live page gets them: start_idx is the session's
+    sample index) and the stretches it decoded (or missed, and why), for the session page and Compare."""
+    s = await get_session(sid)
+    a, b = idx_range(s, start_s, end_s)
+    msgs, wins = await bus_rows(sid, a, b, limit)
+    return {"messages": msgs[:limit], "more": len(msgs) > limit, "windows": wins, "device_id": s.get("device_id")}
+
+
+@app.get("/api/sessions/{sid}/bus/named")
+async def session_bus_named(sid: int, start_s: float | None = None, end_s: float | None = None, chip: str | None = None,
+                            fold: bool = True, limit: int = Query(500, ge=1, le=5000)):
+    """For agents: the bus messages named like the Bus panel does (chip from the board's list, register or command
+    and readings from the sensor library), repeats folded. chip: only messages of chips whose name, type or place
+    contains this."""
+    s = await get_session(sid)
+    a, b = idx_range(s, start_s, end_s)
+    # a little before the range too: where the I2C switch stood when it began
+    ctx = int(2.0 / SAMPLE_PERIOD_S)
+    raw, wins = await bus_rows(sid, max(0, a - ctx), b, 20000)
+    events = [{"t": r["start_idx"] * SAMPLE_PERIOD_S, "end_t": None if r["end_idx"] is None else r["end_idx"] * SAMPLE_PERIOD_S,
+               "kind": r["kind"], "data": r["data"]} for r in raw[:20000]]
+    dev = await q_one("SELECT bus_chips FROM devices WHERE id = %s", (s["device_id"],)) if s.get("device_id") else None
+    chips = (dev or {}).get("bus_chips") or {}
+    library = {r["n"]: {**r["body"], "name": r["name"]} for r in await q_all("SELECT lower(name) AS n, name, body FROM chip_types")}
+    out = name_session_bus(events, chips, library, fold=False)
+    lo = a * SAMPLE_PERIOD_S
+    msgs = [m for m in out["messages"] if m["t_s"] >= lo]
+    if chip:
+        q = chip.lower()
+        msgs = [m for m in msgs if q in m["chip"].lower() or q in m.get("type", "").lower() or q in m["at"].lower()]
+    shown = fold_repeats(msgs) if fold else msgs
+    wins = [w for w in wins if w["end_idx"] is None or w["end_idx"] > a]
+    return {"session": {"id": sid, "name": s["name"], "board": s.get("device_name")},
+            "range": {"start_s": round(lo, 4), "end_s": round(min(b * SAMPLE_PERIOD_S, s["duration_s"]), 4)},
+            "decoded": {"windows": len(wins), "missed": [{"start_s": round(w["start_idx"] * SAMPLE_PERIOD_S, 3),
+                                                          "why": w["missed"]} for w in wins if w.get("missed")][:20]},
+            "switches": out["switches"], "board_chips": chips,
+            "messages": shown[:limit], "shown": min(limit, len(shown)), "more": len(shown) > limit or len(raw) > 20000}
 
 
 @app.get("/api/sessions/{sid}/uart")
@@ -815,6 +911,68 @@ async def delete_device(did: int):
     return {"deleted": did}
 
 
+CHIP_KEY = re.compile(r"^(m|[0-7]):([0-9]{1,3})$")
+SPI_KEY = "spi"  # the SPI chip on the analyzer's chip select (one for now)
+
+
+class BusChip(BaseModel):
+    name: str = Field("", max_length=40)
+    type: str | None = Field(None, max_length=40)  # its chip type in the sensor library (Settings → Devices & sensors → Sensor library)
+    switch: bool | None = None  # an I2C switch (TCA9548A-style): its writes open ports. None: from its type, or guessed
+
+
+def check_bus_chips(chips: dict[str, BusChip]) -> dict:
+    """Keys are "<where>:<address>": m (main bus) or a switch port 0-7, and a 7-bit address; or "spi" for the SPI chip
+    on the analyzer's chip select."""
+    if len(chips) > 128:
+        raise HTTPException(422, "at most 128 chips")
+    out = {}
+    for key, c in chips.items():
+        m = CHIP_KEY.match(key)
+        if key != SPI_KEY and (not m or not 0x03 <= int(m[2]) <= 0x77):
+            raise HTTPException(422, f"not a chip position: {key!r} (m:<address> or <port>:<address>, address 3-119, or spi)")
+        c = c.model_dump(exclude_none=True)
+        c["name"] = c["name"].strip()
+        if not c.get("type"):
+            c.pop("type", None)
+        if c["name"] or "switch" in c or "type" in c:
+            out[key] = c
+    return out
+
+
+@app.get("/api/devices/{did:int}/bus-chips")
+async def get_bus_chips(did: int):
+    r = await q_one("SELECT bus_chips FROM devices WHERE id = %s", (did,))
+    if r is None:
+        raise HTTPException(404, "device not found")
+    return r["bus_chips"]
+
+
+@app.put("/api/devices/{did:int}/bus-chips")
+async def put_bus_chips(did: int, body: dict[str, BusChip], request: Request):
+    """All of the board's chips at once: name, type from the sensor library, I2C switch. Agents only when Settings →
+    Agents allows them to edit the library."""
+    if request.headers.get("x-pst-client") == "mcp" and not (await mcp_settings()).get("library"):
+        raise HTTPException(403, "agents may not edit boards' chip lists: switch it on in Settings → Agents")
+    chips = check_bus_chips(body)
+    types = {c["type"].lower() for c in chips.values() if c.get("type")}
+    library = {r["n"]: r for r in await q_all("SELECT lower(name) AS n, name, body FROM chip_types")} if types else {}
+    if types - set(library):
+        raise HTTPException(422, f"not in the sensor library: {', '.join(sorted(types - set(library)))}")
+    for k, c in chips.items():
+        if c.get("type"):
+            bus = "spi" if k == SPI_KEY else "i2c"
+            t = library[c["type"].lower()]
+            if bus not in {b.get("bus") for b in t["body"].get("buses", [])}:
+                raise HTTPException(422, f"{t['name']} has no {bus.upper()} entry in the sensor library")
+    chips = {k: {**c, "type": library[c["type"].lower()]["name"]} if c.get("type") else c for k, c in chips.items()}
+    r = await q_one("UPDATE devices SET bus_chips = %s, updated_at = now() WHERE id = %s RETURNING bus_chips",
+                    (Jsonb(chips), did))
+    if r is None:
+        raise HTTPException(404, "device not found")
+    return r["bus_chips"]
+
+
 @app.get("/api/devices/active")
 async def get_active_device():
     return await active_device()
@@ -950,7 +1108,7 @@ async def storage():
 
 async def mcp_settings() -> dict:
     """{lan, hardware, tokens: [{id, name, token, created}]}. An older single "token" becomes the token "default"."""
-    m = {"lan": False, "hardware": False, **(await get_setting_value("mcp") or {})}
+    m = {"lan": False, "hardware": False, "library": False, **(await get_setting_value("mcp") or {})}
     tokens = m.get("tokens")
     if tokens is None:
         tokens = [{"id": 1, "name": "default", "token": m["token"], "created": None}] if m.get("token") else []
@@ -959,7 +1117,7 @@ async def mcp_settings() -> dict:
 
 
 async def save_mcp(m: dict) -> None:
-    await save_setting("mcp", {"lan": m["lan"], "hardware": m["hardware"], "tokens": m["tokens"]})
+    await save_setting("mcp", {"lan": m["lan"], "hardware": m["hardware"], "library": m.get("library", False), "tokens": m["tokens"]})
 
 
 def new_token(tokens: list[dict], name: str) -> dict:
@@ -1004,6 +1162,7 @@ async def mcp_status():
 class McpIn(BaseModel):
     lan: bool | None = None
     hardware: bool | None = None
+    library: bool | None = None  # agents may edit the sensor library and boards' chip lists
 
 
 @app.put("/api/mcp")
@@ -1014,6 +1173,8 @@ async def mcp_set(body: McpIn):
         m["lan"] = body.lan
     if body.hardware is not None:
         m["hardware"] = body.hardware
+    if body.library is not None:
+        m["library"] = body.library
     if m["lan"] and not m["tokens"]:
         new_token(m["tokens"], "default")
     await save_mcp(m)
@@ -1301,3 +1462,11 @@ async def forward(request: Request, path: str) -> Response:
         raise HTTPException(502, f"capture service unreachable: {e}") from e
     return Response(r.content, r.status_code, media_type=r.headers.get("content-type"))
 
+
+
+# modules (modules/<name>/: the logic analyzer, …) -----------------------------------------------------------
+from . import modules  # noqa: E402 (needs the helpers above)
+
+modules.setup(app, capture, get_setting_value, save_setting)
+# through lambdas, so tests can swap the database functions
+chip_library.setup(app, lambda *a: q_one(*a), lambda *a: q_all(*a), lambda: mcp_settings(), Jsonb)

@@ -3,6 +3,11 @@
   import CurrentChart from '../components/CurrentChart.svelte';
   import LogPanel from '../components/LogPanel.svelte';
   import UsbConsole from '../components/UsbConsole.svelte';
+  import BusPanel from '../components/BusPanel.svelte';
+  import ChipLanes from '../components/ChipLanes.svelte';
+  import { lanesFor, lanesPref, setLanesPref, type ChartScale } from '../lib/lanes';
+  import { library } from '../lib/chips.svelte';
+  import { bus } from '../lib/bus.svelte';
   import ControlStrip from '../components/ControlStrip.svelte';
   import { api, type ResetGroup } from '../lib/api';
   import { fmtAmps, fmtClock, fmtDuration, fmtLife } from '../lib/format';
@@ -55,6 +60,19 @@
   });
   const sessionAvg = $derived(session && session.duration_s > 0 ? session.charge_c / session.duration_s : null);
   const lifeAvg = $derived(sessionAvg ?? stats?.win ?? null);
+
+  /** The bus row under the mouse (Bus panel), shaded on the chart. */
+  const busLit = $derived(bus.hover ? { a: bus.hover.a * PERIOD, b: bus.hover.b * PERIOD, label: bus.hover.label } : null);
+  // chip lanes under the chart: the decoded messages in the window, a tick each
+  let showLanes = $state(lanesPref());
+  let scale = $state<ChartScale | null>(null);
+  let laneHover = $state<{ a: number; b: number; label: string } | null>(null);
+  $effect(() => { if (bus.events.length) library.ensure(); });
+  $effect(() => (showLanes && bus.analyzer ? bus.use() : undefined)); // keep the messages coming with the panel folded
+  // chips with a message in the window (to the second: the window moves with every frame)
+  const laneFrom = $derived(Math.floor(scale?.min ?? 0));
+  const lanes = $derived(showLanes && bus.analyzer ? lanesFor(bus.events.filter((e) => (e.end_idx ?? e.start_idx) * PERIOD >= laneFrom), bus.chips, (i) => i * PERIOD) : []);
+  const busHighlight = $derived([busLit, laneHover].filter((h) => h != null));
 
   /** The last firmware flash, while it's in the live buffer: shaded on the chart. */
   const flashHighlights = $derived.by(() => {
@@ -115,6 +133,10 @@
   const uartStatus = $derived(
     st ? `UART ${st.uart.connected ? 'connected' : 'offline'} · ${st.uart.baud} baud · ${live.lines.length} lines` : '',
   );
+  // The tab actually shown: a saved USB tab falls back to UART when the board's USB isn't there.
+  const shownTab = $derived(usb.tab === 'usb' && live.status?.usb ? 'usb' : 'uart');
+  // The logic analyzer module: the Bus panel shows when it's installed and switched on.
+  $effect(() => bus.watch());
 </script>
 
 <div class="page">
@@ -161,6 +183,7 @@
   </section>
 
   <div class="body">
+    <div class="maincol">
     <section class="panel chartpanel" aria-label="Current">
       <div class="panel-head">
         <h2>Current</h2>
@@ -207,18 +230,22 @@
       {#if live.message}<div class="info">{live.message}</div>{/if}
 
       <div class="chartwrap">
-        <CurrentChart x={live.x} mn={live.mn} mx={live.mx} avg={live.avg} version={live.version} {log} {markers} {cursor} {showBand} {showAvg} highlights={flashHighlights}
+        <CurrentChart x={live.x} mn={live.mn} mx={live.mx} avg={live.avg} version={live.version} {log} {markers} {cursor} {showBand} {showAvg} highlights={[...flashHighlights, ...busHighlight]}
           selection={live.selection} onselect={(r) => live.select(r)} endLabel={live.paused ? 'end' : 'now'} height={400}
-          label="Current over time" />
+          label="Current over time" onscale={(sc) => (scale = sc)} />
+        {#if lanes.length}<ChipLanes {lanes} {scale} lit={busLit} onhover={(h) => (laneHover = h)} label="Chip lanes: bus messages in this window" />{/if}
       </div>
       <div class="legend">
         <button type="button" class="toggle" aria-pressed={showAvg} onclick={() => (showAvg = !showAvg)}><i class="sw line"></i>average</button>
         <button type="button" class="toggle" aria-pressed={showBand} onclick={() => (showBand = !showBand)}><i class="sw band"></i>min–max per pixel</button>
         <span><i class="sw tick"></i>log line</span>
         {#if flashHighlights.length}<span><i class="sw flash"></i>firmware flash</span>{/if}
+        {#if bus.analyzer && bus.events.length}<label class="lanetog"><input type="checkbox" bind:checked={showLanes} onchange={() => setLanesPref(showLanes)} /> chip lanes</label>{/if}
         <span class="faint">Drag to select a range · click a log line to put the cursor there</span>
       </div>
     </section>
+    {#if bus.analyzer && bus.analyzer.values?.enabled !== false}<BusPanel />{/if}
+    </div>
 
     <div class="logwrap">
       {#if usb.tab === 'usb' && live.status?.usb}
@@ -233,9 +260,11 @@
 
 {#snippet logTabs()}
   <div class="seg" role="group" aria-label="Log source">
-    <button type="button" aria-pressed={usb.tab === 'uart'} onclick={() => usb.setTab('uart')}>UART</button>
-    <button type="button" aria-pressed={usb.tab === 'usb'} onclick={() => usb.setTab('usb')}
-      title="The board's own USB console">USB{#if live.status?.usb?.wanted && live.status.usb.menu && usb.tab !== 'usb'}<span class="badge" aria-label="menu waiting"></span>{/if}</button>
+    <button type="button" aria-pressed={shownTab === 'uart'} onclick={() => usb.setTab('uart')}>UART</button>
+    {#if live.status?.usb}
+      <button type="button" aria-pressed={shownTab === 'usb'} onclick={() => usb.setTab('usb')}
+        title="The board's own USB console">USB{#if live.status?.usb?.wanted && live.status.usb.menu && usb.tab !== 'usb'}<span class="badge" aria-label="menu waiting"></span>{/if}</button>
+    {/if}
   </div>
 {/snippet}
 
@@ -248,7 +277,8 @@
   .banner.bad { border-color: var(--rec); color: var(--rec); background: var(--rec-bg); }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
   .body { display: flex; flex-wrap: wrap; gap: 16px; align-items: stretch; }
-  .chartpanel { flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; }
+  .maincol { flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+  .chartpanel { min-width: 0; display: flex; flex-direction: column; }
   .sub-bar, .sel-bar, .info { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
   .sub-bar { background: var(--panel2); }
   .sel-bar { background: var(--sel); }
@@ -258,13 +288,16 @@
   .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 8px 16px 12px; font-size: 12px; color: var(--muted); }
   .legend span, .toggle { display: inline-flex; align-items: center; gap: 6px; }
   .toggle { border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); padding: 3px 8px; cursor: pointer; font-size: 12px; }
+  .lanetog { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .lanetog input { margin: 0; accent-color: var(--accent); }
   .toggle[aria-pressed='false'] { opacity: 0.5; text-decoration: line-through; }
   .sw { display: inline-block; }
   .sw.line { width: 16px; height: 2px; background: var(--trace); }
   .sw.band { width: 16px; height: 10px; background: var(--trace-fill); }
   .sw.tick { width: 1px; height: 10px; background: var(--muted); }
   .sw.flash { width: 12px; height: 10px; background: var(--flash-bg); border-left: 2px solid var(--flash); }
-  .logwrap { flex: 1 1 380px; min-width: 0; display: flex; height: 600px; }
+  /* As tall as the chart (and the Bus panel under it), never taller: its lines scroll */
+  .logwrap { flex: 1 1 380px; min-width: 0; display: flex; min-height: 600px; contain: size; }
   .logwrap > :global(*) { flex: 1 1 0; }
   :global(.u-select) { background: var(--sel) !important; box-shadow: inset 1px 0 0 var(--accent), inset -1px 0 0 var(--accent); }
   @media (max-width: 720px) {
@@ -272,6 +305,6 @@
     .kpis { gap: 8px; }
     .kpis :global(.kpi) { padding: 10px 12px; }
     .kpis :global(.kpi .value) { font-size: 18px; }
-    .logwrap { height: 420px; }
+    .logwrap { min-height: 0; height: 420px; }
   }
 </style>

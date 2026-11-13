@@ -6,7 +6,7 @@ import pytest
 
 from types import SimpleNamespace
 
-from pst_mcp import hardware, server
+from pst_mcp import hardware, modules, server
 from pst_mcp.auth import TokenGate
 from pst_mcp.client import Api, ApiError, allowed
 
@@ -40,6 +40,8 @@ def fake_api(calls):
             return httpx.Response(200, json={"start": 1_000_000, "bin_samples": 250_000, "mean": [1e-3] * 4, "min": [0] * 4, "max": [2e-3] * 4})
         if p == "/api/device/uart/lines":
             return httpx.Response(200, json=[{"seq": i, "wall": w, "text": f"l{i}"} for i, w in enumerate([980.0, 995.0, 999.5])])
+        if p == "/api/modules":
+            return httpx.Response(200, json=[{"name": "analyzer", "installed": STATE["analyzer"]}])
         if p == "/api/mcp/auth":
             return httpx.Response(200, json={"lan": False, "token": None, "hardware": STATE["hardware"]})
         if p == "/api/agents/requests" and req.method == "POST":
@@ -48,8 +50,21 @@ def fake_api(calls):
             return httpx.Response(200, json={"id": 7, "status": STATE["answer"]})
         if p == "/api/agents/actions":
             return httpx.Response(200, json={"ok": True})
+        if p == "/api/sessions/2/cycles":
+            return httpx.Response(200, json={"index": 3, "start_s": 180.5, "end_s": 181.25})
+        if p == "/api/sessions/2/bus/named":
+            return httpx.Response(200, json={"messages": [{"t_s": 180.6, "chip": "SHT4x", "kind": "cmd"}], "more": False})
         if p == "/api/devices/active":
             return httpx.Response(200, json={"id": 1, "voltage_mv": 3700})
+        if p == "/api/chips" and req.method == "GET":
+            return httpx.Response(200, json=[{"id": 3, "name": "SHT4x", "body": {"name": "SHT4x", "buses": [{"bus": "i2c", "addresses": [68], "style": "commands"}]},
+                                              "source": "built-in", "agent": None, "checked": False, "boards": []}])
+        if p == "/api/chips/3" and req.method == "PUT":
+            return httpx.Response(200, json={"name": "SHT4x", "checked": False, "boards": []})
+        if p == "/api/chips" and req.method == "POST":
+            return httpx.Response(200, json={"name": json.loads(req.content)["name"], "checked": False})
+        if p == "/api/devices/1/bus-chips":
+            return httpx.Response(200, json=json.loads(req.content) if req.method == "PUT" else {"m:68": {"type": "SHT4x"}, "0:16": {"name": "old"}})
         if p.startswith("/api/device/ppk2/"):
             return httpx.Response(200, json={})
         if p == "/api/profiles/1" and req.method == "PUT":
@@ -58,16 +73,17 @@ def fake_api(calls):
     return handler
 
 
-STATE = {"hardware": False, "ask": "pending", "answer": "allowed"}
+STATE = {"hardware": False, "ask": "pending", "answer": "allowed", "analyzer": True}
 
 
 @pytest.fixture
 def calls(monkeypatch):
     calls = []
-    STATE.update(hardware=False, ask="pending", answer="allowed")
+    STATE.update(hardware=False, ask="pending", answer="allowed", analyzer=True)
     a = Api(base_url="http://api", transport=httpx.MockTransport(fake_api(calls)))
     monkeypatch.setattr(server, "api", a)
     monkeypatch.setattr(server, "hw", hardware.Hardware(a))
+    monkeypatch.setattr(server, "modules", modules.Modules(a))
     monkeypatch.setattr(hardware, "POLL_S", 0.01)
     return calls
 
@@ -132,12 +148,16 @@ def test_only_safe_writes():
                  ("POST", "/api/agents/requests/1/answer"), ("POST", "/api/agents/revoke"), ("PUT", "/api/mcp"),
                  ("POST", "/api/flash/token"), ("POST", "/api/mcp/tokens"), ("DELETE", "/api/mcp/tokens/1"),
                  ("POST", "/api/mcp/tokens/1/renew"), ("PUT", "/api/measurement"),
-                 ("PUT", "/api/measurement/max-voltage")]:
+                 ("PUT", "/api/measurement/max-voltage"), ("POST", "/api/modules/analyzer/events"),
+                 ("PUT", "/api/modules/analyzer/settings"), ("POST", "/api/modules/analyzer/scan"),
+                 ("POST", "/api/chips/3/check"), ("POST", "/api/chips/3/restore"), ("DELETE", "/api/chips/3"), ("PUT", "/api/devices/1"),
+                 ("POST", "/api/chips/3"), ("PUT", "/api/chips")]:
         assert not allowed(m, p), (m, p)
     for m, p in [("PUT", "/api/profiles/1"), ("POST", "/api/profiles"), ("POST", "/api/sessions/3/phases/test"),
                  ("POST", "/api/sessions/3/types/test"), ("PATCH", "/api/sessions/3"), ("GET", "/api/flash/jobs"),
                  ("GET", "/api/flash/3"), ("POST", "/api/agents/requests"), ("GET", "/api/agents/requests/3"),
-                 ("POST", "/api/agents/actions")]:
+                 ("POST", "/api/agents/actions"), ("POST", "/api/chips"), ("PUT", "/api/chips/3"),
+                 ("PUT", "/api/devices/1/bus-chips"), ("POST", "/api/modules/analyzer/decode")]:
         assert allowed(m, p), (m, p)
     with pytest.raises(ApiError, match="not allowed"):
         run(Api(base_url="http://api").request("POST", "/api/device/ppk2/dut", json={"on": True}))
@@ -153,7 +173,8 @@ def test_says_it_is_the_mcp_server():
 
 READ_TOOLS = {"list_sessions", "get_session", "range_stats", "current_over_time", "search_log", "list_events",
               "cycle_summary", "get_cycle", "battery_life", "live_status", "live_window", "list_profiles",
-              "test_phase_rules", "test_cycle_types", "save_profile", "usb_console_lines", "list_uploads"}
+              "test_phase_rules", "test_cycle_types", "save_profile", "usb_console_lines", "list_uploads",
+              "chips_list", "chip_get", "chip_save", "board_chips", "set_board_chips", "bus_decode", "session_bus"}
 
 
 def test_tools_are_registered_with_schemas(calls):
@@ -296,3 +317,45 @@ def test_gate_names_the_token_and_drops_a_forged_name():
     local = [(b"x-pst-token-name", b"forged")]  # local port: no token, and no name either
     run(TokenGate(app, provider)({"type": "http", "path": "/mcp", "headers": local}, None, send))
     assert b"x-pst-token-name" not in seen["h"]
+
+
+def test_sensor_library_tools(calls):
+    ctx = SimpleNamespace(request_context=SimpleNamespace(session=SimpleNamespace(client_params=SimpleNamespace(
+        clientInfo=SimpleNamespace(name="claude-code", version="2.1")))))
+    # an existing chip is updated, a new one added; the agent's name goes along
+    i2c = server.ChipBus(bus="i2c", addresses=[0x44], style="commands")
+    assert run(server.chip_save(server.ChipTable(name="sht4x", buses=[i2c]), ctx))["updated"] == "SHT4x"
+    added = server.ChipTable(name="LIS3DH", tags=["acceleration"], buses=[server.ChipBus(bus="i2c", addresses=[0x18]), server.ChipBus(bus="spi", inc_bit=0x40)])
+    assert run(server.chip_save(added, ctx))["added"] == "LIS3DH"
+    puts = [c for c in calls if c[0] in ("PUT", "POST") and c[1].startswith("/api/chips")]
+    assert [c[1] for c in puts] == ["/api/chips/3", "/api/chips"]
+    assert run(server.chip_get("SHT4X"))["table"]["buses"][0]["style"] == "commands"
+    assert run(server.chips_list())["chips"][0]["buses"] == [{"bus": "i2c", "addresses": ["0x44"], "style": "commands", "registers": 0, "commands": 0}]
+    sent = json.loads(next(c for c in calls if c[0] == "POST" and c[1] == "/api/chips")[3])
+    assert sent["tags"] == ["acceleration"]
+    assert sent["buses"] == [{"bus": "i2c", "addresses": [0x18], "style": "basic", "reg_bytes": 1, "byte_order": "big", "registers": [], "commands": []},
+                             {"bus": "spi", "addresses": [], "inc_bit": 0x40, "style": "basic", "reg_bytes": 1, "byte_order": "big", "registers": [], "commands": []}]
+    # board chips: changes merge, removals drop, the rest stays
+    r = run(server.set_board_chips({"1:16": server.BoardChip(type="VEML7700", name="Light 1")}, remove=["0:16"]))
+    assert r["chips"] == {"m:68": {"type": "SHT4x"}, "1:16": {"type": "VEML7700", "name": "Light 1"}}
+
+
+def test_sensor_library_tools_only_with_a_bus_module(calls):
+    STATE["analyzer"] = False
+    tools = {t.name for t in run(server.mcp.list_tools())}
+    assert tools == READ_TOOLS - server.LIBRARY_TOOLS
+    with pytest.raises(Exception, match="needs the logic analyzer module"):
+        run(server.mcp.call_tool("chips_list", {}))
+    assert not any(c[1] == "/api/chips" for c in calls)  # refused before it asks the api
+    # installed again: listed and usable (after the short cache)
+    STATE["analyzer"] = True
+    server.modules._cached = None
+    assert server.LIBRARY_TOOLS <= {t.name for t in run(server.mcp.list_tools())}
+    assert run(server.mcp.call_tool("chips_list", {}))
+
+
+def test_session_bus_for_a_cycle(calls):
+    r = run(server.session_bus(2, cycle=3, chip="sht"))
+    assert r["messages"][0]["chip"] == "SHT4x"
+    (_m, _p, q, _b), = [c for c in calls if c[1] == "/api/sessions/2/bus/named"]
+    assert q == {"start_s": "180.5", "end_s": "181.25", "chip": "sht", "limit": "300"}

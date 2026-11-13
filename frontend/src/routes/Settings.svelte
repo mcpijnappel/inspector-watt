@@ -4,23 +4,37 @@
   import DevicesSection from '../components/settings/DevicesSection.svelte';
   import FirmwareSection from '../components/settings/FirmwareSection.svelte';
   import HealthSection from '../components/settings/HealthSection.svelte';
+  import LibrarySection from '../components/settings/LibrarySection.svelte';
   import MeasurementSection from '../components/settings/MeasurementSection.svelte';
+  import ModulesSection from '../components/settings/ModulesSection.svelte';
   import ProfilesSection from '../components/settings/ProfilesSection.svelte';
   import StorageSection from '../components/settings/StorageSection.svelte';
+  import { bus } from '../lib/bus.svelte';
   import '../components/settings/settings.css';
 
   let { section }: { section?: string } = $props();
 
-  const SECTIONS = [
-    { id: 'devices', label: 'Devices', hint: 'Boards on the bench, voltage limits' },
+  // The sensor library (and each board's chips) only with a module that decodes buses: the logic analyzer.
+  $effect(() => bus.watch());
+  const library = $derived(bus.analyzer != null);
+  const SECTIONS = $derived([
+    library
+      ? { id: 'devices', label: 'Devices & sensors', hint: 'Boards, their chips and sensors, the sensor library' }
+      : { id: 'devices', label: 'Devices', hint: 'Boards, their voltages and defaults' },
     { id: 'profiles', label: 'Phase profiles', hint: 'Phase rules, cycle types, record presets' },
     { id: 'measurement', label: 'Measurement & safety', hint: 'Idle power-off, spike filter, batteries' },
     { id: 'firmware', label: 'Firmware upload', hint: 'Upload status, token, build setup' },
     { id: 'storage', label: 'Storage', hint: 'Disk space and data per session' },
+    { id: 'modules', label: 'Modules', hint: 'Logic analyzer and other extras' },
     { id: 'agents', label: 'Agents (MCP)', hint: 'Connect AI agents, hardware control' },
     { id: 'health', label: 'System health', hint: 'PPK2 stream, UART, services' },
-  ] as const;
+  ]);
   const KEY = 'pst.settings.section';
+  // Sub-pages: #/settings/library is the Sensor library tab of "Devices & sensors" (kept while the module list
+  // is still loading, so a link to it doesn't jump to Boards first)
+  const SUB: Record<string, string> = { library: 'devices' };
+  const known = (id: string | null | undefined) =>
+    !!id && (SECTIONS.some((s) => s.id === id) || (id in SUB && (library || !bus.modulesKnown)));
 
   function remembered(): string {
     try {
@@ -29,10 +43,11 @@
       return 'devices';
     }
   }
-  const current = $derived(SECTIONS.some((s) => s.id === section) ? section! : SECTIONS.some((s) => s.id === remembered()) ? remembered() : 'devices');
+  const page = $derived(known(section) ? section! : known(remembered()) ? remembered() : 'devices');
+  const current = $derived(SUB[page] ?? page);
   $effect(() => {
     try {
-      localStorage.setItem(KEY, current);
+      localStorage.setItem(KEY, page);
     } catch { /* storage blocked */ }
   });
 </script>
@@ -52,11 +67,19 @@
       </ul>
     </nav>
     <main class="content settings">
-      {#if current === 'devices'}<DevicesSection />
+      {#if current === 'devices'}
+        {#if library}
+          <div class="subtabs" role="tablist" aria-label="Devices and sensors">
+            <a role="tab" href="#/settings/devices" aria-selected={page === 'devices'}>Boards</a>
+            <a role="tab" href="#/settings/library" aria-selected={page === 'library'}>Sensor library</a>
+          </div>
+        {/if}
+        {#if page === 'library'}{#if library}<LibrarySection />{/if}{:else}<DevicesSection />{/if}
       {:else if current === 'profiles'}<ProfilesSection />
       {:else if current === 'measurement'}<MeasurementSection />
       {:else if current === 'firmware'}<FirmwareSection />
       {:else if current === 'storage'}<StorageSection />
+      {:else if current === 'modules'}<ModulesSection />
       {:else if current === 'agents'}<AgentsSection />
       {:else}<HealthSection />{/if}
     </main>
@@ -75,6 +98,10 @@
   a.on .lbl { color: var(--accent); }
   .lbl { font-weight: 600; font-size: 14px; }
   .phone { display: none; width: 100%; }
+  .subtabs { display: flex; gap: 4px 20px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+  .subtabs a { flex-direction: row; padding: 6px 0 8px; border-radius: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; color: var(--muted); font-size: 14px; }
+  .subtabs a:hover { background: none; color: var(--text); }
+  .subtabs a[aria-selected='true'] { border-bottom-color: var(--accent); color: var(--text); font-weight: 600; }
   .content { min-width: 0; }
   @media (max-width: 760px) {
     .page { padding: 12px; }

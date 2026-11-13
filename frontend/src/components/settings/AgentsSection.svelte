@@ -3,6 +3,7 @@
   // hardware control; what agents did to the hardware; and the tools, folded.
   import { agents, clientName } from '../../lib/agents.svelte';
   import { api, type AgentAction, type McpStatus } from '../../lib/api';
+  import { bus } from '../../lib/bus.svelte';
   import { fmtClock } from '../../lib/format';
   import { copyText } from '../../lib/copy';
   import SectionHead from './SectionHead.svelte';
@@ -46,6 +47,10 @@
   const hours = $derived(Math.round((agents.state?.max_grant_s ?? 28800) / 3600));
   const argText = (a: Record<string, unknown>) =>
     Object.entries(a).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ');
+
+  async function setLibrary(on: boolean) {
+    await run(() => api.setMcpLibrary(on));
+  }
 
   async function setHardware(on: boolean) {
     await run(() => api.setMcpHardware(on));
@@ -168,6 +173,18 @@
           </div>
         </details>
       </section>
+
+      {#if bus.analyzer}<!-- the sensor library is there only with a bus-decoding module (Settings watches the list) -->
+      <h3 class="s-sub">Sensor library</h3>
+      <section class="panel s-card">
+        <div class="s-row single">
+          <div class="txt"><strong class="state">Agents may edit the sensor library</strong>
+            <span class="hint">Add or change the tables of chips and sensors (e.g. from a datasheet) and put them on a board. What they save is marked "not checked" until you check it in Settings → Devices & sensors → Sensor library. They can't check or delete tables.</span></div>
+          <input type="checkbox" checked={st.library} disabled={busy} aria-label="Agents may edit the sensor library"
+            onchange={(e) => setLibrary((e.target as HTMLInputElement).checked)} />
+        </div>
+      </section>
+      {/if}
 
       <h3 class="s-sub">Recent agent actions</h3>
       <section class="panel">
